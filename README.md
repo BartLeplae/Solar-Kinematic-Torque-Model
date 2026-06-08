@@ -91,6 +91,11 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
 Solar Kinematic and Solar Cycle Data 1755–2025:
 
 <img src="Solar_Cycles_vs_Sun_Kinematics.png" alt="Result" width="50%"/>
+<img src="Solar_Cycles_1_to_5.png" alt="Solar_Cycle_Phase" width="75%"/>
+<img src="Solar_Cycles_6_to_10.png" alt="Solar_Cycle_Phase" width="75%"/>
+<img src="Solar_Cycles_11_to_15.png" alt="Solar_Cycle_Phase" width="75%"/>
+<img src="Solar_Cycles_16_to_20.png" alt="Solar_Cycle_Phase" width="75%"/>
+<img src="Solar_Cycles_21_to_25.png" alt="Solar_Cycle_Phase" width="75%"/>
 
 
 Sun Barycentric Orbit and magnetic field 1976-2025:
