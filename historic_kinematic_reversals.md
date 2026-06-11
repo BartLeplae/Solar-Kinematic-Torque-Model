@@ -1,6 +1,6 @@
 # Historic Kinematic Solar Cycle Summary
 
-Generated on: 2026-06-07
+Generated on: 2026-06-11
 
 | Cycle | Start | Max | Amplitude | Kinematic Event | Phase |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -30,21 +30,27 @@ Generated on: 2026-06-07
 | 24 | 2008-12 | 2014-04 | 113.6 | 2011-04 | Rising |
 
 ## Statistical Test: Rising vs. Declining Phase
-| Metric | Rising Phase | Declining Phase |
+| Metric | Rising Phase | Declining/Min Phase |
 | :--- | :--- | :--- |
 | **Count** | 8 | 16 |
 | **Mean Amplitude** | 125.6 | 200.2 |
+| **Median Amplitude** | **117.1** | **213.1** |
 
-### T-Test Validation
-- **T-Statistic:** `-3.9971`
-- **P-Value:** `4.8215e-04`
-- **Note:** Welch's one-sided test (Rising < Declining).
+### The Amplitude Ceiling (Median Analysis)
+Because standard means can be skewed by historical outliers (e.g., Solar Cycle 19), comparing the median amplitude provides a highly robust, non-parametric metric. Cycles that experience a natural kinematic reversal achieve a median amplitude of **213.1**, whereas cycles prematurely disrupted in their Rising Phase are constructively capped at a median of **117.1**. This represents a **45.0% systemic suppression** of the solar dynamo.
 
-## Advanced Validation: Permutation Test
-To eliminate reliance on bell-curve assumptions, we conducted a non-parametric permutation test.
+### Advanced Validation: Permutation Test
+To rigorously validate this delta without relying on bell-curve assumptions, we conducted a non-parametric permutation test.
 
 - **Resamples:** 10,000
 - **Observed Difference in Means:** 74.59 sunspots
-- **Empirical P-Value:** `0.00090`
+- **Empirical P-Value:** `0.00070`
 
-**Conclusion:** The result is highly significant. It is mathematically improbable (p < 0.01) that the observed amplitude suppression in the Rising Phase occurred by random chance.
+**Conclusion:** The result is highly significant. It is mathematically improbable (p < 0.01) that the observed 45.0% amplitude suppression occurred by random chance.
+## Sensitivity Analysis: Leave-One-Out (Jackknife)
+To ensure the statistical significance and amplitude suppression are not artificially driven by a single historical outlier, we performed a Leave-One-Out (Jackknife) resampling analysis.
+
+- **Worst-Case P-Value:** `0.00220` *(Occurs if Cycle 5 is removed)*
+- **Worst-Case Suppression:** **43.4%** *(Occurs if Cycle 5 is removed)*
+
+**Conclusion:** The model is **HIGHLY ROBUST**. Even in the absolute worst-case scenario (dropping the most influential historical cycles), the mathematical probability remains significant and the physical amplitude ceiling holds.

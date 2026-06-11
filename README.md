@@ -42,7 +42,7 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
 
 <img src="Impact_of_reversal_on_solar_cycle_amplitude.png" alt="Result" width="75%"/>
 
-* Permutation Test on this result: **empirical P-value of 0.0006 (99.9% confidence)** 
+* Permutation Test on this result: **empirical P-value of 0.0007 (99.9% confidence)** 
 * Conclusion: There is a highly significant relationship between tangential acceleration and the solar cycle amplitude.
 * Indirect conclusion: There is a highly significant relationship between tangential acceleration and the Sun Magnetic field.
 

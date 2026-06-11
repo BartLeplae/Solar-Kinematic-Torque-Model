@@ -1697,19 +1697,6 @@ def test_historic_kinematic_reversals(df, crossing_dates):
         equal_var=False
     )
 
-    # Append Statistics to the Markdown file
-    with open(filename, 'a') as f:
-        f.write(f"\n## Statistical Test: Rising vs. Declining Phase\n")
-        f.write(f"| Metric | Rising Phase | Declining Phase |\n")
-        f.write(f"| :--- | :--- | :--- |\n")
-        f.write(f"| **Count** | {len(rising_reversals)} | {len(declining_reversals)} |\n")
-        f.write(f"| **Mean Amplitude** | {rising_reversals.mean():.1f} | {declining_reversals.mean():.1f} |\n\n")
-        
-        f.write(f"### T-Test Validation\n")
-        f.write(f"- **T-Statistic:** `{t_stat:.4f}`\n")
-        f.write(f"- **P-Value:** `{p_value:.4e}`\n")
-        f.write(f"- **Note:** Welch's one-sided test (Rising < Declining).\n")
-
     # Calculate Statistical Significance using a Permutation Test
     n_permutations = 10000
     res = stats.permutation_test(
@@ -1717,21 +1704,41 @@ def test_historic_kinematic_reversals(df, crossing_dates):
         statistic=lambda x, y: np.mean(x) - np.mean(y), 
         permutation_type='independent', 
         alternative='greater', 
-        n_resamples=n_permutations
+        n_resamples=n_permutations,
+        random_state=42
     )
 
-    # Append Permutation Statistics to the Markdown file
+    # 3. Median Suppression Calculation
+    rising_median = rising_reversals.median()
+    declining_median = declining_reversals.median()
+    suppression_pct = ((declining_median - rising_median) / declining_median) * 100
+
+
+    # Append ALL Statistics to the Markdown file
     with open(filename, 'a') as f:
-        f.write(f"\n## Advanced Validation: Permutation Test\n")
-        f.write(f"To eliminate reliance on bell-curve assumptions, we conducted a non-parametric permutation test.\n\n")
+        f.write(f"\n## Statistical Test: Rising vs. Declining Phase\n")
+        f.write(f"| Metric | Rising Phase | Declining/Min Phase |\n")
+        f.write(f"| :--- | :--- | :--- |\n")
+        f.write(f"| **Count** | {len(rising_reversals)} | {len(declining_reversals)} |\n")
+        f.write(f"| **Mean Amplitude** | {rising_reversals.mean():.1f} | {declining_reversals.mean():.1f} |\n")
+        f.write(f"| **Median Amplitude** | **{rising_median:.1f}** | **{declining_median:.1f}** |\n\n")
+        
+        f.write(f"### The Amplitude Ceiling (Median Analysis)\n")
+        f.write(f"Because standard means can be skewed by historical outliers (e.g., Solar Cycle 19), "
+                f"comparing the median amplitude provides a highly robust, non-parametric metric. "
+                f"Cycles that experience a natural kinematic reversal achieve a median amplitude of **{declining_median:.1f}**, "
+                f"whereas cycles prematurely disrupted in their Rising Phase are constructively capped at a median of **{rising_median:.1f}**. "
+                f"This represents a **{suppression_pct:.1f}% systemic suppression** of the solar dynamo.\n\n")
+        
+        f.write(f"### Advanced Validation: Permutation Test\n")
+        f.write(f"To rigorously validate this delta without relying on bell-curve assumptions, we conducted a non-parametric permutation test.\n\n")
         f.write(f"- **Resamples:** {n_permutations:,}\n")
         f.write(f"- **Observed Difference in Means:** {res.statistic:.2f} sunspots\n")
         f.write(f"- **Empirical P-Value:** `{res.pvalue:.5f}`\n\n")
         
-        # Add interpretation
         if res.pvalue < 0.01:
             f.write(f"**Conclusion:** The result is highly significant. It is mathematically improbable (p < 0.01) "
-                    f"that the observed amplitude suppression in the Rising Phase occurred by random chance.")
+                    f"that the observed {suppression_pct:.1f}% amplitude suppression occurred by random chance.")
 
     return cycles_df
 
@@ -1741,13 +1748,7 @@ def plot_reversal_amplitudes_stacked(cycles_df):
     
     Generates a dual-layout plot featuring a jittered boxplot and vertically stacked 
     histograms. Calculates and annotates statistical significance dynamically using 
-    a 10,000-resample Permutation Test.
-
-    Args:
-        cycles_df (pd.DataFrame): The output table from `test_historic_kinematic_reversals`.
-
-    Outputs:
-        Saves 'Impact_of_reversal_on_solar_cycle_amplitude.png' to local directory.
+    a 10,000-resample Permutation Test. Includes Mean and Median markers.
     """
     print("\nGenerating Stacked Amplitude vs. Phase Visualization...")
     
@@ -1757,6 +1758,8 @@ def plot_reversal_amplitudes_stacked(cycles_df):
     
     mean_rise = rising.mean()
     mean_dec = declining.mean()
+    median_rise = rising.median()    
+    median_dec = declining.median()
     n_rise = len(rising)
     n_dec = len(declining)
 
@@ -1767,7 +1770,8 @@ def plot_reversal_amplitudes_stacked(cycles_df):
         statistic=lambda x, y: np.mean(x) - np.mean(y), 
         permutation_type='independent', 
         alternative='greater', 
-        n_resamples=n_permutations
+        n_resamples=n_permutations,
+        random_state=42
     )
 
     # --- Generate the Automated Interpretation ---
@@ -1790,7 +1794,6 @@ def plot_reversal_amplitudes_stacked(cycles_df):
     # ==========================================
     ax_box = fig.add_subplot(gs[:, 0]) 
     
-    # ---> FIX: Changed 'labels' to 'tick_labels' here to resolve the Matplotlib 3.9+ deprecation warning <---
     box = ax_box.boxplot([rising, declining], 
                      tick_labels=['Rising Phase\n(Premature Disruption)', 'Declining Phase\n(Natural Reversal)'],
                      patch_artist=True,
@@ -1825,7 +1828,6 @@ def plot_reversal_amplitudes_stacked(cycles_df):
                   
     props = dict(boxstyle='round,pad=0.6', facecolor='white', alpha=0.9, edgecolor='gray')
     
-    # Anchored to the top left of the subplot (slightly smaller font to fit the extra text)
     ax_box.text(0.04, 0.96, stats_text, transform=ax_box.transAxes, fontsize=8,
                 verticalalignment='top', horizontalalignment='left', bbox=props, fontweight='bold', zorder=5)
 
@@ -1841,7 +1843,10 @@ def plot_reversal_amplitudes_stacked(cycles_df):
     ax_rise = fig.add_subplot(gs[0, 1]) 
     
     ax_rise.hist(rising, bins=bins, color='#e74c3c', alpha=0.8, edgecolor='white', label=f'Cycles (N={n_rise})')
+    
+    # --- NEW: Plot Mean and Median ---
     ax_rise.axvline(mean_rise, color='darkred', linestyle='dashed', linewidth=2.5, label=f'Mean ({mean_rise:.0f})')
+    ax_rise.axvline(median_rise, color='black', linestyle='dotted', linewidth=2.5, label=f'Median ({median_rise:.0f})')
     
     ax_rise.set_title('Population Density: Rising Phase Disruption', fontsize=12, fontweight='bold')
     ax_rise.set_ylabel('Number of Cycles', fontsize=10, fontweight='bold')
@@ -1855,7 +1860,10 @@ def plot_reversal_amplitudes_stacked(cycles_df):
     ax_dec = fig.add_subplot(gs[1, 1], sharex=ax_rise) 
     
     ax_dec.hist(declining, bins=bins, color='#3498db', alpha=0.8, edgecolor='white', label=f'Cycles (N={n_dec})')
+    
+    # --- NEW: Plot Mean and Median ---
     ax_dec.axvline(mean_dec, color='darkblue', linestyle='dashed', linewidth=2.5, label=f'Mean ({mean_dec:.0f})')
+    ax_dec.axvline(median_dec, color='black', linestyle='dotted', linewidth=2.5, label=f'Median ({median_dec:.0f})')
     
     ax_dec.set_title('Population Density: Natural Declining Reversal', fontsize=12, fontweight='bold')
     ax_dec.set_xlabel('Maximum Sunspot Number (Amplitude)', fontsize=12, fontweight='bold')
@@ -1870,9 +1878,80 @@ def plot_reversal_amplitudes_stacked(cycles_df):
 
     filename = f"Impact_of_reversal_on_solar_cycle_amplitude.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-
-    # plt.show()
     plt.close()
+
+def run_leave_one_out_analysis(cycles_df):
+    """
+    Performs a Leave-One-Out (LOO) sensitivity analysis to ensure 
+    no single solar cycle is disproportionately driving the statistical 
+    significance OR the median suppression delta. Appends results to Markdown.
+    """
+    print("\n--- Running Leave-One-Out Sensitivity Analysis ---")
+    
+    loo_results = []
+    n_permutations = 10000
+    
+    for index, row in cycles_df.iterrows():
+        # Drop the current cycle to test the model without it
+        test_df = cycles_df.drop(index)
+        
+        # Split into the two phase groups
+        rising = test_df[test_df['Reversal_Phase'] == 'Rising']['Amplitude']
+        declining = test_df[test_df['Reversal_Phase'] == 'Declining']['Amplitude']
+        
+        # 1. Rerun the permutation test
+        res = stats.permutation_test(
+            (declining, rising), 
+            statistic=lambda x, y: np.mean(x) - np.mean(y), 
+            permutation_type='independent', 
+            alternative='greater', 
+            n_resamples=n_permutations,
+            random_state=42
+        )
+        
+        # 2. Recalculate the Medians
+        r_med = rising.median()
+        d_med = declining.median()
+        suppression = ((d_med - r_med) / d_med) * 100
+        
+        loo_results.append({
+            'Dropped_Cycle': row['Cycle_Index'],
+            'Dropped_Phase': row['Reversal_Phase'],
+            'New_P_Value': res.pvalue,
+            'New_Rising_Median': r_med,
+            'New_Declining_Median': d_med,
+            'New_Suppression_Pct': suppression
+        })
+        
+    loo_df = pd.DataFrame(loo_results)
+    
+    # Identify the worst-case scenarios
+    worst_p = loo_df.loc[loo_df['New_P_Value'].idxmax()]
+    worst_suppression = loo_df.loc[loo_df['New_Suppression_Pct'].idxmin()]
+    
+    # Console Output
+    print(f"Worst-case P-Value: {worst_p['New_P_Value']:.5f} (Occurs when dropping Cycle {worst_p['Dropped_Cycle']})")
+    print(f"Worst-case Suppression: {worst_suppression['New_Suppression_Pct']:.1f}% (Occurs when dropping Cycle {worst_suppression['Dropped_Cycle']})")
+    
+    # --- NEW: Append to the Markdown File ---
+    filename = 'historic_kinematic_reversals.md'
+    with open(filename, 'a') as f:
+        f.write(f"\n## Sensitivity Analysis: Leave-One-Out (Jackknife)\n")
+        f.write(f"To ensure the statistical significance and amplitude suppression are not artificially driven by a single historical outlier, we performed a Leave-One-Out (Jackknife) resampling analysis.\n\n")
+        
+        f.write(f"- **Worst-Case P-Value:** `{worst_p['New_P_Value']:.5f}` *(Occurs if Cycle {worst_p['Dropped_Cycle']} is removed)*\n")
+        f.write(f"- **Worst-Case Suppression:** **{worst_suppression['New_Suppression_Pct']:.1f}%** *(Occurs if Cycle {worst_suppression['Dropped_Cycle']} is removed)*\n\n")
+        
+        if worst_p['New_P_Value'] < 0.05 and worst_suppression['New_Suppression_Pct'] > 25.0:
+            f.write(f"**Conclusion:** The model is **HIGHLY ROBUST**. Even in the absolute worst-case scenario (dropping the most influential historical cycles), the mathematical probability remains significant and the physical amplitude ceiling holds.")
+            print("[✓] Model is ROBUST. The Amplitude Ceiling holds regardless of which cycle is removed.")
+        else:
+            f.write(f"**Conclusion:** The model exhibits fragility. A single cycle is disproportionately propping up the metrics.")
+            print("[!] Model is FRAGILE. A single cycle is heavily propping up the metrics.")
+
+    print(f"[✓] Leave-One-Out analysis successfully appended to '{filename}'")
+    
+    return loo_df
 
 if __name__ == "__main__":
 
@@ -1970,8 +2049,12 @@ if __name__ == "__main__":
 
 
     crossing_dates = sorted(list(braking_dates) + list(accelerating_dates))
-# Run the historic statistical test!
+
+# 1. Generate the table, the Medians, and the base Permutation test
     historic_cycles_df = test_historic_kinematic_reversals(historical_sunspots, crossing_dates)
+
+# 2. Run the sensitivity test and append the results to the bottom of the file
+    run_leave_one_out_analysis(historic_cycles_df)
 
 # 3. Plot the Boxplot!
     if historic_cycles_df is not None and not historic_cycles_df.empty:
