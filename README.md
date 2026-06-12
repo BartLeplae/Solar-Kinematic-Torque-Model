@@ -13,7 +13,7 @@ This repository contains an analysis pipeline designed to investigate the relati
 
 ## Data Sources
 * **Sunspot Data:** Historical SIDC/SILSO datasets (Cycles 1 through 24).
-* **Kinematic Data:** Computed based on planetary barycentric movement via JPL DE421 ephemerides (`skyfield`).
+* **Kinematic Data:** Computed based on planetary barycentric movement via JPL DE440 ephemerides (`skyfield`).
 * **Magnetic Data:** Polar Field Data sourced from the Wilcox Solar Observatory (WSO).
 
 <img src="Solar_Activity_Kinematics_Magnetics.png" alt="Correlation" height="400"/>
@@ -66,7 +66,7 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/yourusername/d.git](https://github.com/yourusername/Solar-Kinematic-Torque-Model.git)
+   git clone https://github.com/yourusername/Solar-Kinematic-Torque-Model.git
    cd Solar-Kinematic-Torque-Model
    ```
 
@@ -74,7 +74,7 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
    ```bash
     conda env create -f environment.yml
    ```
-   *This will automatically install Python 3.10 and all required scientific libraries (pandas, numpy, scipy, matplotlib, skyfield, drms).*
+   *This will automatically install Python 3.10 and all required scientific libraries (pandas, numpy, scipy, matplotlib, skyfield).*
 3. **Activate the environment:**
    ```bash
     conda activate solar-env
@@ -82,7 +82,7 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
 
 4. **Run the Analysis Pipeline:**
    ```bash
-    python correlate_sunspots_velocity_magnetism_documented.py
+    python correlate_sunspots_velocity_magnetism.py
    ```
    *Note: This will generate several high-resolution PNG plots and update the Markdown data tables in your local directory.*
 

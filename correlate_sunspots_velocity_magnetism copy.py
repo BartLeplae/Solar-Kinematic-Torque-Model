@@ -16,7 +16,7 @@ reversals, constructively capping and dampening the cycle's maximum amplitude.
 Data Sources:
 -------------
 - Sunspot Data: SIDC / SILSO (World Data Center for the Sunspot Index)
-- Kinematic Data: JPL DE440 Ephemerides (via Skyfield)
+- Kinematic Data: JPL DE421 Ephemerides (via Skyfield)
 - Magnetic Data: Wilcox Solar Observatory (WSO) Polar Field Data
 
 Author: Bart Leplae
@@ -25,12 +25,11 @@ License: MIT
 
 Dependencies:
 -------------
-pandas, numpy, matplotlib, scipy, skyfield, drms
+pandas, numpy, matplotlib, scipy, skyfield
 """
 
 import os
 from datetime import datetime, timedelta
-import logging
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,7 +43,7 @@ import re
 from scipy.stats import pearsonr
 
 
-def apply_zero_phase_smoothing(df: pd.DataFrame, cutoff_months: int = 13, order: int = 4) -> pd.DataFrame:
+def apply_zero_phase_smoothing(df, cutoff_months=13, order=4):
     """
     Applies a Butterworth low-pass filter to eliminate high-frequency unclassified noise.
     
@@ -58,15 +57,15 @@ def apply_zero_phase_smoothing(df: pd.DataFrame, cutoff_months: int = 13, order:
         order (int): The order of the Butterworth filter polynomial. Default is 4.
 
     Returns:
-        pd.DataFrame: The dataframe with added 'Smoothed_' columns containing the filtered data.
+        pd.DataFrame: The original dataframe with added 'Smoothed_' columns.
     """
-    logging.info(f"Applying {order}th-order Butterworth low-pass filter (cutoff: {cutoff_months} months)...")
+    print(f"\nApplying {order}th-order Butterworth low-pass filter (cutoff: {cutoff_months} months)...")
     
-    # Our data is monthly; sampling rate is 1 observation/month.
-    # The Nyquist frequency is half the sampling rate (0.5 cycles/month).
+    # Our data is monthly, so the sampling rate is 1 observation/month
+    # The Nyquist frequency is half the sampling rate
     nyquist = 0.5 
     
-    # Filter out any signal with a period shorter than the cutoff_months
+    # We want to filter out any signal with a period shorter than the cutoff_months
     cutoff_freq = 1.0 / cutoff_months
     
     # Normalize the frequency for SciPy's Butterworth filter design
@@ -75,18 +74,15 @@ def apply_zero_phase_smoothing(df: pd.DataFrame, cutoff_months: int = 13, order:
     # Design the filter (b = numerator, a = denominator polynomials)
     b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
     
-    # Fill any NaNs (both at edges and internal gaps) to prevent the filtfilt algorithm from failing
+    # Temporarily fill any potential NaNs at the edges to prevent the filter from breaking
     vel = df['Velocity_km_s'].bfill().ffill()
     acc = df['Tangential_Acc_km_s2'].bfill().ffill()
     
     # Use filtfilt (forward-backward filtering) to ensure exactly ZERO phase shift
     df['Smoothed_Velocity_km_s'] = signal.filtfilt(b, a, vel)
-    df['Smoothed_Tangential_Acc_km_s2'] = signal.filtfilt(b, a, acc)
+    df['Smoothed_Tangential_Acc'] = signal.filtfilt(b, a, acc)
     
-    # Harmonize the Sunspot data if present.
-    # Note: SILSO's 'Smoothed_SSN' is already a 13-month rolling average. 
-    # We pass it through the Butterworth filter here so its frequency response 
-    # strictly matches the kinematic data without introducing phase shifts.
+    # We also apply it to the Sunspot data if desired, to keep signals strictly comparable
     if 'Smoothed_SSN' in df.columns:
         ssn = df['Smoothed_SSN'].bfill().ffill()
         df['Smoothed_SSN'] = signal.filtfilt(b, a, ssn)
@@ -94,21 +90,8 @@ def apply_zero_phase_smoothing(df: pd.DataFrame, cutoff_months: int = 13, order:
     return df
 
 
-def load_smoothed_sunspots(cache_file: str = "sunspots_cache.csv", max_age_days: int = 30) -> pd.DataFrame:
-    """
-    Loads monthly smoothed sunspot data from a local cache or fetches it from SILSO.
-    
-    Checks the local directory for a cached CSV. If the cache is missing or older 
-    than the specified maximum age, it fetches fresh V2.0 monthly smoothed total 
-    sunspot number data directly from the SIDC/SILSO server.
-
-    Args:
-        cache_file (str): The local filepath for caching the CSV data. Default is "sunspots_cache.csv".
-        max_age_days (int): The maximum age in days before the cache is considered stale. Default is 30.
-
-    Returns:
-        pd.DataFrame: A cleaned time-series dataframe indexed by Date (1st of each month).
-    """
+def load_smoothed_sunspots(cache_file="sunspots_cache.csv", max_age_days=30):
+    """Loads sunspot data from a local cache or fetches it if the cache is missing/expired."""
     
     # 1. Check if the cache exists and is fresh enough
     if os.path.exists(cache_file):
@@ -116,16 +99,16 @@ def load_smoothed_sunspots(cache_file: str = "sunspots_cache.csv", max_age_days:
         age = datetime.now() - file_mod_time
         
         if age < timedelta(days=max_age_days):
-            logging.info(f"Loading data from local cache (Age: {age.days} days)...")
-            # Load from CSV, ensuring our Date index is accurately reconstructed
+            print(f"Loading data from local cache (Age: {age.days} days)...")
+            # Load from CSV, ensuring our Date index is correctly parsed
             df = pd.read_csv(cache_file, index_col='Date', parse_dates=['Date'])
             return df
         else:
-            logging.info(f"Cache is {age.days} days old (expired). Fetching fresh data...")
+            print(f"Cache is {age.days} days old (expired). Fetching fresh data...")
     else:
-        logging.info("No local cache found. Fetching fresh data from SILSO...")
+        print("No local cache found. Fetching fresh data from SILSO...")
 
-    # 2. Define the SILSO data endpoint and column schema
+    # 2. Define the SILSO data endpoint and columns
     url = "https://www.sidc.be/silso/DATA/SN_ms_tot_V2.0.csv"
     cols = [
         'Year', 'Month', 'Decimal_Date', 'Smoothed_SSN', 
@@ -133,63 +116,114 @@ def load_smoothed_sunspots(cache_file: str = "sunspots_cache.csv", max_age_days:
     ]
     
     # 3. Fetch and Clean the Data
-    # SIDC occasionally updates delimiter conventions; regex handles both ; and , safely
     df = pd.read_csv(url, sep=r'[;,]', engine='python', header=None, names=cols)
-    
-    # SILSO denotes missing/uncalculated smoothed months with -1.0
     df['Smoothed_SSN'] = df['Smoothed_SSN'].replace(-1.0, float('nan'))
     df = df.dropna(subset=['Smoothed_SSN']).copy()
     
-    # Construct a proper datetime index by defaulting the Day to the 1st of the month
     df['Date'] = pd.to_datetime(df[['Year', 'Month']].assign(DAY=1))
     df.set_index('Date', inplace=True)
     
     # 4. Save the cleaned dataframe to cache for future runs
-    logging.info(f"Saving cleaned data to '{cache_file}'...")
+    print(f"Saving cleaned data to '{cache_file}'...")
     df.to_csv(cache_file)
     
     return df
 
 
-def append_sun_kinematics(df: pd.DataFrame, ephemeris_file: str = 'de440.bsp') -> pd.DataFrame:
+def append_predicted_series(df):
+    """
+    Appends an 'Expected_SSN' column by fitting a Hathaway curve 
+    scaled dynamically to the actual maximum amplitude of each specific cycle.
+    """
+    # Official historical minima dates (t_0) for Solar Cycles 1 through 25
+    cycle_minima = [
+        pd.Timestamp('1755-02-01'), pd.Timestamp('1766-06-01'), 
+        pd.Timestamp('1775-06-01'), pd.Timestamp('1784-09-01'), 
+        pd.Timestamp('1798-04-01'), pd.Timestamp('1810-07-01'), 
+        pd.Timestamp('1823-05-01'), pd.Timestamp('1833-11-01'), 
+        pd.Timestamp('1843-07-01'), pd.Timestamp('1855-12-01'), 
+        pd.Timestamp('1867-03-01'), pd.Timestamp('1878-12-01'), 
+        pd.Timestamp('1890-03-01'), pd.Timestamp('1902-01-01'), 
+        pd.Timestamp('1913-07-01'), pd.Timestamp('1923-08-01'), 
+        pd.Timestamp('1933-09-01'), pd.Timestamp('1944-02-01'), 
+        pd.Timestamp('1954-04-01'), pd.Timestamp('1964-10-01'), 
+        pd.Timestamp('1976-03-01'), pd.Timestamp('1986-09-01'), 
+        pd.Timestamp('1996-08-01'), pd.Timestamp('2008-12-01'), 
+        pd.Timestamp('2019-12-01'), pd.Timestamp('2030-12-01')  
+    ]
+    
+    df['Expected_SSN'] = np.nan
+    
+    # Iterate through each cycle block
+    for i in range(len(cycle_minima) - 1):
+        start_date = cycle_minima[i]
+        end_date = cycle_minima[i+1]
+        
+        # Isolate the current cycle in the dataframe
+        cycle_mask = (df.index >= start_date) & (df.index < end_date)
+        cycle_data = df[cycle_mask]
+        
+        if len(cycle_data) == 0:
+            continue
+            
+        # --- DYNAMIC AMPLITUDE CALCULATION ---
+        # Find the highest actual smoothed sunspot number in this cycle's window.
+        # If the window is empty of data (all NaNs), fallback to historical average 115.
+        if cycle_data['Smoothed_SSN'].dropna().empty:
+            A = 115.0
+        else:
+            A = cycle_data['Smoothed_SSN'].max()
+        
+        # Shape parameters (peak occurs at t = b * c = 3.75 years)
+        b = 1.25  # Decay factor
+        c = 3.0   # Rise asymmetry factor
+        
+        # Calculate time elapsed in months, convert to years
+        months_elapsed = np.arange(len(cycle_data))
+        t = months_elapsed / 12.0
+        
+        # Avoid division by zero
+        t = np.where(t == 0, 0.001, t)
+        
+        # Calculate the mathematical shape
+        shape = (t / b)**c * np.exp(-t / b)
+        
+        # Normalize so the peak of the mathematical shape equals 1
+        peak_of_shape = np.max(shape) if np.max(shape) > 0 else 1
+        
+        # Multiply the normalized shape by our dynamically found max amplitude
+        expected_values = A * (shape / peak_of_shape)
+        
+        # Assign back to the dataframe
+        df.loc[cycle_mask, 'Expected_SSN'] = expected_values
+
+    return df
+
+def append_sun_kinematics(df):
     """
     Calculates the Sun's velocity and tangential acceleration relative to the 
-    Solar System Barycenter for every chronological index in the dataframe.
-
-    Args:
-        df (pd.DataFrame): The time-series dataframe indexed by Date.
-        ephemeris_file (str): The local path or filename of the JPL ephemeris. 
-                              Default is 'de440.bsp'.
-
-    Returns:
-        pd.DataFrame: The original dataframe with added 'Velocity_km_s' and 
-                      'Tangential_Acc_km_s2' columns.
+    Solar System Barycenter for every month in the historical dataframe.
     """
-    logging.info(f"Loading extended ephemeris data ({ephemeris_file})...")
+    print("\nLoading extended ephemeris data (DE440)...")
     
-    eph = load(ephemeris_file)
+    eph = load('de440.bsp')
     sun = eph['sun']
     ts = load.timescale()
     
-    logging.info("Calculating historical kinematics (Vectorized)...")
+    print("Calculating historical kinematics (Vectorized)...")
     
-    # 1. Skyfield Time Conversion
-    # Skyfield cannot natively parse Pandas DatetimeIndex objects. We must 
-    # localize to UTC and extract pure Python datetime objects for the Timescale.
+    # 1. Bypass Pandas completely
     utc_index = df.index.tz_localize('UTC') if df.index.tz is None else df.index
     python_datetimes = utc_index.to_pydatetime().tolist()
     t = ts.from_datetimes(python_datetimes)
     
     # 2. Vectorized Velocity calculation
-    # Note: In JPL DE ephemerides, evaluating a target body directly via .at(t) 
-    # inherently defaults the origin to the Solar System Barycenter (SSB).
     state = sun.at(t)
     vel_km_s = state.velocity.km_per_s
     speed_km_s = np.linalg.norm(vel_km_s, axis=0)
     df['Velocity_km_s'] = speed_km_s
     
-    # 3. Vectorized Acceleration calculation (Central Difference Method)
-    # Calculate velocity 1 second into the past and future to derive acceleration.
+    # 3. Vectorized Acceleration calculation (Central Difference)
     dt_seconds = 1.0
     dt_days = dt_seconds / 86400.0
     
@@ -202,11 +236,11 @@ def append_sun_kinematics(df: pd.DataFrame, ephemeris_file: str = 'de440.bsp') -
     # Raw 3D acceleration vector
     acc_km_s2 = (vel_plus - vel_minus) / (2.0 * dt_seconds)
     
-    # 4. Tangential Acceleration
-    # Calculate the orbital torque by isolating the acceleration parallel to the path.
-    # We take the dot product of the acceleration vector and velocity unit vector: 
-    # a_t = a * v_hat
+    # 4. Tangential Acceleration (Dot Product)
+    # First, get the unit vector of velocity (direction only)
     v_hat = vel_km_s / speed_km_s
+    
+    # Dot product of acceleration vector and velocity unit vector
     tangential_acc = np.sum(acc_km_s2 * v_hat, axis=0)
     
     # Append to dataframe
@@ -215,30 +249,14 @@ def append_sun_kinematics(df: pd.DataFrame, ephemeris_file: str = 'de440.bsp') -
     return df
 
 
-def plot_multivariate_solar_data(
-    df: pd.DataFrame, 
-    crossing_dates: list, 
-    filename: str = "Solar_Cycles_vs_Sun_Kinematics.png"
-) -> None:
-    """
-    Generates and saves a stacked 2-panel plot comparing actual sunspots and kinematics.
-    
-    The top panel displays the smoothed sunspot number (SSN). The bottom panel 
-    displays the Sun's velocity and tangential acceleration relative to the SSB 
-    on twin y-axes. Vertical markers denote the kinematic zero-crossing events.
-
-    Args:
-        df (pd.DataFrame): The solar dataset containing SSN and kinematic columns.
-        crossing_dates (list): A list of datetime objects where tangential acceleration = 0.
-        filename (str): The output filename for the saved plot. Default is 
-                        "Solar_Cycles_vs_Sun_Kinematics.png".
-    """
-    logging.info(f"Generating stacked multivariate historical plot: {filename}")
+def plot_multivariate_solar_data(df, crossing_dates):
+    """Generates a stacked 2-panel plot comparing actual sunspots and kinematics."""
+    print("\nGenerating stacked multivariate historical plot...")
     
     # Create a figure with 2 subplots stacked vertically, sharing the x-axis
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)
     
-    # Reduce the vertical space (height) between the two stacked subplots
+    # Reduce the horizontal space between the two boxes
     fig.subplots_adjust(hspace=0.05) 
     
     # ==========================================
@@ -274,9 +292,9 @@ def plot_multivariate_solar_data(
     ax3.set_ylabel('Tangential Acceleration (km/s²)', fontsize=12, color=color_acceleration)
     ax3.axhline(0, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     
-    # Plot Acceleration (Updated to use strictly consistent unit naming)
+    # Plot Acceleration
     ax3.plot(df.index, df['Tangential_Acc_km_s2'], color=color_acceleration, linewidth=1.0, alpha=0.2)
-    l4 = ax3.plot(df.index, df['Smoothed_Tangential_Acc_km_s2'], color=color_acceleration, linewidth=2.0, label='Smoothed Tangential Accel')
+    l4 = ax3.plot(df.index, df['Smoothed_Tangential_Acc'], color=color_acceleration, linewidth=2.0, label='Smoothed Tangential Accel')
     ax3.tick_params(axis='y', labelcolor=color_acceleration)
     
     # Combined Legend for the bottom box
@@ -302,50 +320,37 @@ def plot_multivariate_solar_data(
     ax1.legend(lines_top, labels_top, loc='upper left', framealpha=0.9, fontsize=11)
 
     plt.xlim(df.index.min(), df.index.max())
-    
-    # tight_layout handles spacing cleanly alongside subplots_adjust
     plt.tight_layout()
 
+    filename = f"Solar_Cycles_vs_Sun_Kinematics.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
+        
+    # plt.show()
     plt.close()
 
-def analyze_zero_crossings(df: pd.DataFrame, debounce_months: int = 36) -> tuple[pd.DatetimeIndex, pd.DataFrame]:
+def analyze_zero_crossings(df):
     """
     Finds every time Tangential Acceleration crosses zero and extracts the 
     surrounding sunspot dynamics to test for cycle stagnation or delay.
-    
-    Includes a debounce parameter (default 36 months / 3 years) to eliminate 
-    rapid oscillation chatter and isolate macro-level kinematic events.
-
-    Args:
-        df (pd.DataFrame): The solar dataset containing SSN and kinematic data.
-        debounce_months (int): Minimum months required between valid zero-crossing events. 
-                               Default is 36 (3 years).
-
-    Returns:
-        tuple: A tuple containing:
-            - crossing_dates (pd.DatetimeIndex): The filtered dates of the events.
-            - events_df (pd.DataFrame): A dataframe detailing the solar phase and 
-                                        trajectory changes at each crossing.
+    Includes a 3-month freeze period to eliminate rapid oscillation chatter.
     """
-    logging.info(f"Extracting Acceleration Zero-Crossing Events (with {debounce_months}-Month Freeze)...")
+    print("\nExtracting Acceleration Zero-Crossing Events (with 3-Month Freeze)...")
     
-    # 1. Calculate the 6-month net change of the Sunspot Number to determine trajectory
+    # 1. Calculate the rate of change (slope) of the Sunspot Number
     df['SSN_Slope'] = df['Smoothed_SSN'].diff(periods=6)
     
     # 2. Find the Raw Zero Crossings
-    # Ensure we are using the unit-consistent column name from the smoothing function
-    acc_signs = np.sign(df['Smoothed_Tangential_Acc_km_s2'].dropna())
+    acc_signs = np.sign(df['Smoothed_Tangential_Acc'].dropna())
     crossings = acc_signs.diff().abs() == 2
     raw_crossing_dates = crossings[crossings].index
     
-    # --- DEBOUNCE LOOP ---
+# --- 3-MONTH FREEZE DEBOUNCE LOOP ---
     filtered_crossing_dates = []
     last_date = None
     
     for date in raw_crossing_dates:
-        # Enforce the freeze period to isolate macro-events
-        if last_date is None or date > (last_date + pd.DateOffset(months=debounce_months)):
+        # FIXED: Add the DateOffset to last_date before comparing timestamps
+        if last_date is None or date > (last_date + pd.DateOffset(months=36)):
             filtered_crossing_dates.append(date)
             last_date = date
             
@@ -357,7 +362,7 @@ def analyze_zero_crossings(df: pd.DataFrame, debounce_months: int = 36) -> tuple
         # Get the exact row of data for this date
         event = df.loc[date]
         
-        # Determine Cycle Phase based on SSN and its 6-month delta
+        # Determine Cycle Phase based on SSN and its slope
         ssn = event['Smoothed_SSN']
         slope = event['SSN_Slope']
         
@@ -377,8 +382,7 @@ def analyze_zero_crossings(df: pd.DataFrame, debounce_months: int = 36) -> tuple
             future_idx = df.index.get_indexer([future_date], method='nearest')[0]
             future_slope = df.iloc[future_idx]['SSN_Slope']
             slope_change = future_slope - slope
-        except (IndexError, KeyError):
-            # Gracefully handle the end of the dataset where future data doesn't exist
+        except:
             slope_change = np.nan
             
         event_data.append({
@@ -393,47 +397,30 @@ def analyze_zero_crossings(df: pd.DataFrame, debounce_months: int = 36) -> tuple
 
     return crossing_dates, events_df
 
-def extract_directional_crossings(df: pd.DataFrame, debounce_months: int = 36) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
+def extract_directional_crossings(df):
     """
     Identifies zero-crossings in tangential acceleration and mathematically 
-    separates them into 'Braking' and 'Accelerating' events.
-    
-    Includes a debounce parameter (default 36 months / 3 years) to eliminate 
-    rapid oscillation chatter and isolate macro-level kinematic events.
-
-    Args:
-        df (pd.DataFrame): The solar dataset containing kinematic data.
-        debounce_months (int): Minimum months required between valid zero-crossing events. 
-                               Default is 36 (3 years).
-
-    Returns:
-        tuple: A tuple containing:
-            - braking_dates (pd.DatetimeIndex): Dates where acceleration shifts positive to negative.
-            - accelerating_dates (pd.DatetimeIndex): Dates where acceleration shifts negative to positive.
+    separates them into 'Brakes' and 'Accelerators', applying a 3-month freeze period.
     """
-    logging.info(f"Extracting Directional Zero-Crossings (with {debounce_months}-Month Freeze)...")
+    print("\nExtracting Directional Zero-Crossings (with 3-Month Freeze)...")
     
-    # Calculate the sign (+1 for Positive Accel, -1 for Negative Accel, 0 for exactly zero)
-    # Ensure we use the unit-consistent column name generated by the smoothing function
-    acc_signs = np.sign(df['Smoothed_Tangential_Acc_km_s2'].dropna())
+    # Calculate the sign (+1 for Positive Accel, -1 for Negative Accel)
+    acc_signs = np.sign(df['Smoothed_Tangential_Acc'].dropna())
     sign_changes = acc_signs.diff()
     
-    # Isolate all index positions where a sign change occurred
+    # Isolate all index positions where a sign change occurred (-2 or +2)
     raw_crossings = sign_changes[sign_changes.abs() == 2]
     
     braking_dates = []
     accelerating_dates = []
     last_date = None
     
-    # Iterate chronologically over all raw crossings together
+# Iterate chronologically over all raw crossings together
     for date, change in raw_crossings.items():
-        # Enforce the freeze period to isolate macro-events
-        if last_date is None or date > (last_date + pd.DateOffset(months=debounce_months)):
-            
-            # A change of -2 means the sign went from +1 to -1 (Torque reversal to Braking)
+        # FIXED: Add the DateOffset to last_date before comparing timestamps
+        if last_date is None or date > (last_date + pd.DateOffset(months=36)):
             if change == -2:
                 braking_dates.append(date)
-            # A change of +2 means the sign went from -1 to +1 (Torque reversal to Accelerating)
             elif change == 2:
                 accelerating_dates.append(date)
             
@@ -442,21 +429,187 @@ def extract_directional_crossings(df: pd.DataFrame, debounce_months: int = 36) -
 
     return pd.DatetimeIndex(braking_dates), pd.DatetimeIndex(accelerating_dates)
 
-
-def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) -> None:
+def calculate_significance(events_df):
     """
-    Slices the continuous solar timeline into individual cycles, arranges them 
-    in a 3x2 grid, and exports them as high-resolution PNG files.
+    Calculates the one-sample t-test for both Rising and Decreasing Phase stagnation.
+    Applies the correct directional hypothesis (less than vs. greater than 0) based on the phase.
+    """
+    print("\n--- Statistical Significance (p-value) ---")
     
-    Each cell in the grid contains two stacked subplots: one for the Sunspot Number 
-    and one for the kinematics. Kinematic zero-crossing markers change color and 
-    line style based on the solar phase at the time of the event.
+    # Define the phases, the expected direction of the slope change, and the t-test alternative
+    phases_to_test = [
+        {'phase': 'Rising Phase', 'expected_change': 'Negative', 'alt_test': 'less'},
+        {'phase': 'Decreasing Phase', 'expected_change': 'Positive', 'alt_test': 'greater'}
+    ]
+    
+    for test in phases_to_test:
+        phase_name = test['phase']
+        alt_test = test['alt_test']
+        expected = test['expected_change']
+        
+        # Isolate the data for the specific phase
+        phase_data = events_df[events_df['Phase'] == phase_name]['Slope_Change_Next_12M']
+        
+        print(f"\n[{phase_name} Stagnation]")
+        
+        if len(phase_data) < 2:
+            print(f"Not enough data points to calculate p-value for {phase_name}.")
+            continue
 
-    Args:
-        df (pd.DataFrame): The solar dataset containing SSN and kinematic data.
-        crossing_dates (pd.DatetimeIndex): The filtered dates of the kinematic zero-crossings.
+        # One-sample t-test: compare the mean to a population mean of 0
+        t_stat, p_val = stats.ttest_1samp(phase_data, 0, alternative=alt_test)
+        
+        print(f"Number of events: {len(phase_data)}")
+        print(f"Expected Slope Change: {expected} (Loss of momentum)")
+        print(f"Actual Mean Slope Change: {phase_data.mean():.2f}")
+        print(f"T-statistic: {t_stat:.4f}")
+        print(f"p-value: {p_val:.4e}")
+        
+        if p_val < 0.05:
+            print("Result: Statistically significant at the 95% confidence level (p < 0.05).")
+        else:
+            print("Result: Not statistically significant.")
+
+def calculate_stratified_significance(events_df):
     """
-    logging.info("Generating and exporting multi-cycle grids (3x2 format)...")
+    Calculates significance for Rising, Early Declining, and Late Declining phases.
+    Splits the Declining phase based on proximity to the solar maximum (36 months).
+    """
+    print("\n--- Statistical Significance (Stratified) ---")
+    
+    # 1. Prepare segments
+    rising = events_df[events_df['Phase'] == 'Rising Phase']['Slope_Change_Next_12M']
+    
+    # Define Early Decline as within 36 months of solar max
+    # (Assuming your dataframe already has a 'Months_From_Max' column or similar)
+    # If you don't have this, we can easily calculate it from your epoch data.
+    early_declining = events_df[
+        (events_df['Phase'] == 'Decreasing Phase') & 
+        (events_df['Months_From_Max'] >= 0) & 
+        (events_df['Months_From_Max'] <= 24)
+    ]['Slope_Change_Next_12M']
+    
+    late_declining = events_df[
+        (events_df['Phase'] == 'Decreasing Phase') & 
+        (events_df['Months_From_Max'] > 24)
+    ]['Slope_Change_Next_12M']
+    
+    segments = [
+        ('Rising Phase', rising, 'less'),
+        ('Early Decline (<24m)', early_declining, 'greater'),
+        ('Late Decline (>24m)', late_declining, 'greater')
+    ]
+    
+    for name, data, alt in segments:
+        print(f"\n[Phase: {name}]")
+        if len(data) < 3:
+            print("Not enough data to calculate p-value.")
+            continue
+            
+        t_stat, p_val = stats.ttest_1samp(data, 0, alternative=alt)
+        print(f"Events: {len(data)} | Mean Slope: {data.mean():.2f}")
+        print(f"p-value: {p_val:.4e}")
+        
+        if p_val < 0.05:
+            print("Result: SIGNIFICANT (Stagnation detected).")
+        else:
+            print("Result: NOT SIGNIFICANT (System likely unresponsive).")
+
+
+def plot_cycle_subplots(df, braking_dates, accelerating_dates):
+    """
+    Slices the historical dataset into individual solar cycles and plots them in a grid.
+    Overlays the Expected Cycle and color-codes the orbital torque events.
+    """
+    print("\n--- Generating Color-Coded Solar Cycle Subplots ---")
+    
+    # 1. Automatically find the solar cycle minimums
+    ssn = df['Smoothed_SSN'].dropna()
+    inv_ssn = -ssn
+    
+    # distance=100 ensures we look for minimums at least ~8 years apart
+    min_indices, _ = signal.find_peaks(inv_ssn, distance=100)
+    min_dates = ssn.index[min_indices]
+    
+    # Create the boundaries: Start of data -> All Minimums -> End of data
+    boundaries = [ssn.index[0]] + list(min_dates) + [ssn.index[-1]]
+    num_cycles = len(boundaries) - 1
+    
+    # 2. Setup the Plot Grid
+    cols = 4
+    rows = int(np.ceil(num_cycles / cols))
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(20, 4 * rows), sharey=True)
+    axes = axes.flatten() 
+    
+    # 3. Plot each cycle
+    for i in range(num_cycles):
+        start_date = boundaries[i]
+        end_date = boundaries[i+1]
+        
+        # Isolate the data for this specific cycle
+        cycle_data = df.loc[start_date:end_date]
+        ax = axes[i]
+        
+        # --- Plot the Sunspot Data ---
+        # Expected Cycle (Background Template)
+        if 'Expected_SSN' in cycle_data.columns:
+            ax.plot(cycle_data.index, cycle_data['Expected_SSN'], color='#2980b9', 
+                    linestyle='-', alpha=0.5, linewidth=2)
+            
+        # Actual Cycle (Foreground)
+        ax.plot(cycle_data.index, cycle_data['Smoothed_SSN'], color='#d35400', linewidth=2.5)
+        
+        # --- Plot the Directional Crossings ---
+        # Find crossings for this specific cycle
+        cycle_brakes = [date for date in braking_dates if start_date <= date <= end_date]
+        cycle_accels = [date for date in accelerating_dates if start_date <= date <= end_date]
+        
+        # Plot Brakes as Red (Positive to Negative)
+        for date in cycle_brakes:
+            ax.axvline(x=date, color='#c0392b', linestyle='--', alpha=0.8, linewidth=1.5)
+            
+        # Plot Accelerators as Green (Negative to Positive)
+        for date in cycle_accels:
+            ax.axvline(x=date, color='#27ae60', linestyle='--', alpha=0.8, linewidth=1.5)
+            
+        # Formatting for the subplot
+        cycle_num = i if start_date.year < 1755 else i + 1 
+        ax.set_title(f"Cycle {cycle_num} ({start_date.year} - {end_date.year})", fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(axis='x', rotation=45)
+        
+    # 4. Hide any empty subplots in the grid 
+    for j in range(num_cycles, len(axes)):
+        axes[j].set_visible(False)
+        
+    # --- Create a Global Legend ---
+    custom_lines = [
+        Line2D([0], [0], color='#d35400', lw=2.5),
+        Line2D([0], [0], color='#2980b9', lw=2, alpha=0.5),
+        Line2D([0], [0], color='#c0392b', lw=1.5, linestyle='--'),
+        Line2D([0], [0], color='#27ae60', lw=1.5, linestyle='--')
+    ]
+    fig.legend(custom_lines, 
+               ['Actual Smoothed SSN', 'Expected Typical Cycle', 'Orbital Brake (Loss of Momentum)', 'Orbital Accelerator (Gain in Momentum)'], 
+               loc='upper center', ncol=4, fontsize=12, bbox_to_anchor=(0.5, 0.97))
+               
+    plt.suptitle("Solar Cycles & Directional Orbital Torques", fontsize=20, fontweight='bold', y=1.02)
+    fig.text(0.02, 0.5, 'Smoothed Sunspot Number', va='center', rotation='vertical', fontsize=14)
+    
+    plt.tight_layout(rect=[0.03, 0, 1, 0.94]) 
+    plt.show()
+
+
+
+def export_cycle_grid_plots(df, crossing_dates):
+    """
+    Slices the continuous solar timeline into individual cycles,
+    arranges them in a 3x2 grid (with stacked boxes for Sunspots and Kinematics),
+    and exports them as separate PNG files containing the cycle numbers.
+    Event markers change color and shape based on the solar phase.
+    """
+    print("\nGenerating and exporting multi-cycle grids...")
 
     # Calculate SSN_Slope if not present to determine the phase of the zero-crossing
     if 'SSN_Slope' not in df.columns:
@@ -482,7 +635,7 @@ def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) 
         end = cycle_starts[i+1] if i + 1 < len(cycle_starts) else df.index.max()
         cycles.append((start, end, i + 1))
 
-    # Configuration for the batches (5 cycles per file: 3 rows x 2 cols)
+    # Configuration for the batches (6 cycles per file: 3 rows x 2 cols)
     cycles_per_file = 5
     num_files = int(np.ceil(len(cycles) / cycles_per_file))
     
@@ -490,11 +643,13 @@ def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) 
     color_vel = '#27ae60'
     color_acc = '#8e44ad'
 
+    from matplotlib.lines import Line2D  # Ensure imported for the custom legend
+
     for file_idx in range(num_files):
         # Determine which cycles go into this specific PNG
         batch_cycles = cycles[file_idx * cycles_per_file : (file_idx + 1) * cycles_per_file]
         
-        # Capture Cycle Numbers for Title and Filename
+        # 1. Capture Cycle Numbers for Title and Filename
         first_cycle = batch_cycles[0][2]
         last_cycle = batch_cycles[-1][2]
         
@@ -546,15 +701,14 @@ def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) 
             ax3 = ax2.twinx()
             ax3.set_ylabel('Accel (km/s²)', fontsize=10, color=color_acc)
             ax3.axhline(0, color='gray', linestyle='-', alpha=0.4, linewidth=1)
-            
-            # Unit continuity preserved: Smoothed_Tangential_Acc_km_s2
-            ax3.plot(c_df.index, c_df['Smoothed_Tangential_Acc_km_s2'], color=color_acc, linewidth=1.5, label='Acceleration')
+            ax3.plot(c_df.index, c_df['Smoothed_Tangential_Acc'], color=color_acc, linewidth=1.5, label='Acceleration')
             ax3.tick_params(axis='y', labelcolor=color_acc)
             
             # ==========================================
             # --- EVENT MARKERS (Phase-Dependent) ---
             # ==========================================
             for d in c_crossings:
+                # Default styling if data is missing
                 p_color = 'black'
                 p_style = '--'
                 
@@ -564,6 +718,7 @@ def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) 
                     slope = event['SSN_Slope']
                     
                     if not (pd.isna(ssn) or pd.isna(slope)):
+                        # Match the phase calculation parameters
                         if ssn < 25.0 and abs(slope) < 5.0:
                             p_color = 'gray'
                             p_style = '-.'          # At Minimum
@@ -599,49 +754,90 @@ def export_cycle_grid_plots(df: pd.DataFrame, crossing_dates: pd.DatetimeIndex) 
         # 2. Export this batch as a highly detailed PNG with dynamic filenames
         filename = f"Solar_Cycles_{first_cycle}_to_{last_cycle}.png"
         plt.savefig(filename, dpi=300, bbox_inches='tight')
-        logging.info(f"Saved {filename} ({len(batch_cycles)} cycles)")
+        print(f"Saved {filename} ({len(batch_cycles)} cycles)")
         
         # Close the figure to free up system memory
         plt.close(fig)
 
-    logging.info("Success! All PNG files have been generated with phase-dependent markers.")
+    print("\nSuccess! All PNG files have been generated with phase-dependent markers in your directory.")
 
 
-def load_wso_magnetic_data(local_file: str = "wso_polar.txt") -> pd.DataFrame:
+
+def calculate_kinetic_energy(df):
     """
-    Parses a locally downloaded WSO Solar Polar Magnetic Field text file.
-    
-    Strips out appended metadata letters (N, S, Avg) and parses the complex 
-    timestamp format. Note: This function requires the user to manually download 
-    the raw text data from the Wilcox Solar Observatory beforehand.
-
-    Args:
-        local_file (str): The filepath to the WSO text file. Default is 'wso_polar.txt'.
-
-    Returns:
-        pd.DataFrame: A cleaned time-series dataframe indexed by Date.
-        
-    Raises:
-        FileNotFoundError: If the local data file does not exist.
-        ValueError: If the file is empty or contains no parsable data.
+    Calculates the Specific Kinetic Energy of the Sun using its orbital velocity.
+    KE = 0.5 * v^2
     """
-    logging.info(f"Loading WSO Solar Polar Magnetic Field Data from '{local_file}'...")
+    print("\nCalculating Sun's Orbital Kinetic Energy...")
     
-    # 1. Load the local file and safeguard the pipeline
-    if not os.path.exists(local_file):
-        raise FileNotFoundError(
-            f"Missing Dependency: '{local_file}' not found. Please download "
-            f"the raw data from WSO and place it in the working directory."
-        )
+    # Check for the velocity column
+    if 'Velocity_km_s' not in df.columns:
+        print("[!] Missing 'Velocity_km_s' column. Cannot calculate energy.")
+        return df
         
-    with open(local_file, 'r') as f:
-        raw_text = f.read()
+    # Calculate Specific Kinetic Energy (J/kg, assuming velocity is in km/s)
+    # We square it, the 0.5 is a constant so it won't affect the normalized shape
+    df['Kinetic_Energy_Raw'] = 0.5 * (df['Velocity_km_s'] ** 2)
+    
+    # Smooth the energy to isolate the deep currents
+    df['Smoothed_Angular_Momentum'] = df['Kinetic_Energy_Raw'].rolling(window=37, center=True).mean()
+    
+    return df
+
+def calculate_angular_momentum(df):
+    """
+    Calculates the Specific Orbital Angular Momentum (L) of the Sun 
+    using the 3D cross product of Position (R) and Velocity (V).
+    Handles both uppercase and lowercase column variations.
+    """
+    print("\nCalculating Sun's Orbital Angular Momentum...")
+    
+    # Dynamically map uppercase keys to the actual case used in your DataFrame
+    col_map = {c.upper(): c for c in df.columns}
+    required = ['X', 'Y', 'Z', 'VX', 'VY', 'VZ']
+    
+    if not all(req in col_map for req in required):
+        print("Warning: Missing 3D vector columns (X, Y, Z, VX, VY, VZ or lowercase equivalents).")
+        print(f"Available columns in your dataset: {list(df.columns)}")
+        return df
+        
+    # Extract the exact column names as they exist in your DataFrame
+    x, y, z = col_map['X'], col_map['Y'], col_map['Z']
+    vx, vy, vz = col_map['VX'], col_map['VY'], col_map['VZ']
+    
+    # Calculate the components of the cross product: L = r x v
+    L_x = (df[y] * df[vz]) - (df[z] * df[vy])
+    L_y = (df[z] * df[vx]) - (df[x] * df[vz])
+    L_z = (df[x] * df[vy]) - (df[y] * df[vx])
+    
+    # Calculate the total magnitude of the Angular Momentum vector
+    df['Angular_Momentum_Raw'] = np.sqrt(L_x**2 + L_y**2 + L_z**2)
+    
+    # Apply standard symmetric rolling mean smoothing directly here as a baseline
+    df['Smoothed_Angular_Momentum'] = df['Angular_Momentum_Raw'].rolling(window=37, center=True).mean()
+    
+    return df
+
+def load_wso_magnetic_data(local_file="wso_polar.txt"):
+    """
+    Fetches and parses the exact WSO Solar Polar Magnetic Field Data format,
+    stripping out appended letters (N, S, Avg) and parsing the complex timestamp.
+    """
+    print("\nLoading WSO Solar Polar Magnetic Field Data...")
+    
+    raw_text = None
+    
+    # 1. Load the local file
+    if os.path.exists(local_file):
+        with open(local_file, 'r') as f:
+            raw_text = f.read()
             
     if not raw_text or len(raw_text.strip()) == 0:
-        raise ValueError(f"FATAL: The file '{local_file}' is completely empty.")
+        print("[!] FATAL: The file is missing or completely empty.")
+        return None
         
     # Helper function to strip letters and keep only numbers and minus signs
-    def clean_num(val_str: str) -> float:
+    def clean_num(val_str):
         return float(re.sub(r'[^\d\.-]', '', val_str))
         
     # 2. Extract Data
@@ -668,56 +864,37 @@ def load_wso_magnetic_data(local_file: str = "wso_polar.txt") -> pd.DataFrame:
                     avg = clean_num(parts[3])
                     
                     data.append([dt_index, north, south, avg])
-                except ValueError:
-                    # Safely skip header strings or unparsable dates
-                    continue 
+                except Exception as e:
+                    continue # Skip any weird header rows
                     
     if len(data) == 0:
-        raise ValueError(f"The file '{local_file}' was read, but no valid magnetic data could be parsed.")
+        print("[!] The file was read, but no valid data could be parsed.")
+        return None
         
     # 3. Build the DataFrame
     mag_df = pd.DataFrame(data, columns=['Date', 'North_Pole', 'South_Pole', 'Avg_Field'])
     mag_df.set_index('Date', inplace=True)
     
-    # Calculate Total Axial Dipole Strength.
-    # WSO records the South pole with negative values. Subtracting the negative 
-    # South from the positive North calculates the absolute magnitude of the dipole gradient.
+    # Calculate Total Dipole Strength (South is negative polarity, so we subtract)
     mag_df['Total_Dipole_Strength'] = (mag_df['North_Pole'] - mag_df['South_Pole']) / 2.0
     
-    logging.info(f"Successfully processed {len(mag_df)} magnetic field records.")
+    print(f"Successfully processed {len(mag_df)} magnetic field records.")
     return mag_df
 
 
-def plot_unified_magnetic_kinematics(
-    mag_df: pd.DataFrame, 
-    df: pd.DataFrame, 
-    braking_dates: pd.DatetimeIndex, 
-    accelerating_dates: pd.DatetimeIndex,
-    mag_smooth_window: int = 12,
-    filename: str = "Solar_Activity_Kinematics_Magnetics.png",
-    show_plot: bool = False
-) -> None:
-    """
-    Creates a stacked 3-panel figure showing the complete Spin-Orbit causality chain.
-    
-    Top Box: Planetary Kinematics (Velocity & Acceleration)
-    Middle Box: Internal Magnetic Field Strength (Engine)
-    Bottom Box: Surface Reaction (Smoothed Sunspot Number)
 
-    Args:
-        mag_df (pd.DataFrame): The dataframe containing WSO polar magnetic data.
-        df (pd.DataFrame): The master dataframe containing kinematics and SSN.
-        braking_dates (pd.DatetimeIndex): Dates where orbital torque shifts positive to negative.
-        accelerating_dates (pd.DatetimeIndex): Dates where orbital torque shifts negative to positive.
-        mag_smooth_window (int): Rolling window (in months) to smooth the magnetic dipole. Default is 12.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window (blocks execution). Default False.
+def plot_unified_magnetic_kinematics(mag_df, df, braking_dates, accelerating_dates):
     """
-    if mag_df is None or mag_df.empty:
-        logging.warning("Skipping Plot: No valid magnetic data available.")
+    Creates a stacked 3-panel figure showing the complete Spin-Orbit causality chain:
+    Top Box: Planetary Kinematics (Velocity & Acceleration)
+    Middle Box: Internal Magnetic Field Strength
+    Bottom Box: Surface Reaction (Sunspots)
+    """
+    if mag_df is None or len(mag_df) == 0:
+        print("[!] Skipping Plot: No magnetic data available.")
         return
         
-    logging.info(f"Generating Stacked 3-Panel Unified Plot ({filename})...")
+    print("\nGenerating Stacked 3-Panel Unified Plot...")
     
     # 1. Align timelines and combine events
     start_date = mag_df.index.min()
@@ -754,9 +931,7 @@ def plot_unified_magnetic_kinematics(
     ax_acc.set_ylabel('Acceleration (km/s²)', fontsize=12, color=color_acc)
     if 'Tangential_Acc_km_s2' in view_df.columns:
         ax_acc.plot(view_df.index, view_df['Tangential_Acc_km_s2'], color=color_acc, linewidth=1.0, alpha=0.2)
-        
-    # Unit continuity preserved to prevent KeyErrors
-    l2 = ax_acc.plot(view_df.index, view_df['Smoothed_Tangential_Acc_km_s2'], color=color_acc, linewidth=2.0, label='Smoothed Tangential Accel')
+    l2 = ax_acc.plot(view_df.index, view_df['Smoothed_Tangential_Acc'], color=color_acc, linewidth=2.0, label='Smoothed Tangential Accel')
     ax_acc.axhline(0, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_acc.tick_params(axis='y', labelcolor=color_acc)
     
@@ -775,8 +950,7 @@ def plot_unified_magnetic_kinematics(
     ax2.plot(mag_df.index, mag_df['North_Pole'], color='blue', alpha=0.15, label='_nolegend_')
     ax2.plot(mag_df.index, mag_df['South_Pole'], color='red', alpha=0.15, label='_nolegend_')
     
-    # Parameterized smoothing window applied to isolate Hale cycle trends
-    smoothed_dipole = mag_df['Total_Dipole_Strength'].rolling(window=mag_smooth_window, center=True).mean()
+    smoothed_dipole = mag_df['Total_Dipole_Strength'].rolling(window=12, center=True).mean()
     ax2.plot(mag_df.index, smoothed_dipole, color=color_mag, linewidth=3, label='Smoothed Magnetic Field Strength')
     ax2.axhline(0, color='gray', linestyle='-', linewidth=1)
     
@@ -811,72 +985,37 @@ def plot_unified_magnetic_kinematics(
         
     # Re-draw the top legend to include the vertical line
     handles, labels = ax1.get_legend_handles_labels()
-    
-    # Safely combine the velocity/acceleration handles with the newly added vertical line handle
-    if handles:
-        ax1.legend(lines_top + [handles[-1]], labels_top + ['Accel Zero-Crossing'], 
-                   loc='upper left', framealpha=0.9, fontsize=11)
+    # We combine the velocity/acceleration handles with the newly added vertical line handle
+    ax1.legend(lines_top + [handles[-1]], labels_top + ['Accel Zero-Crossing'], 
+               loc='upper left', framealpha=0.9, fontsize=11)
                
     plt.xlim(start_date, end_date)
     plt.tight_layout()
 
-    # Save and optionally display
+    filename = f"Solar_Activity_Kinematics_Magnetics.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    if show_plot:
-        plt.show()
-        
+
+    # plt.show()
     plt.close()
 
-
-def plot_continuous_cross_correlation(
-    mag_df: pd.DataFrame, 
-    df: pd.DataFrame, 
-    max_lag_months: int = 60,
-    filename: str = "Magnetic_dipole_vs_tangential_acceleration.png",
-    show_plot: bool = False
-) -> None:
+def plot_continuous_cross_correlation(mag_df, df, max_lag_months=60):
     """
-    Calculates and plots the Cross-Correlation Function (CCF) between kinematic 
-    torque and internal magnetic dipole strength.
-    
-    A 2-panel figure is generated:
+    Calculates and plots a 2-panel figure:
     Top: Overlapping time-series of Tangential Acceleration and Magnetic Dipole.
-    Bottom: The CCF curve across shifting time lags.
-    
-    Note: Because the input signals are heavily smoothed and autocorrelated, the 
-    absolute Pearson 'r' values are inflated. This CCF is primarily utilized for 
-    phase-lag identification to determine chronological causality (which signal leads).
-
-    Args:
-        mag_df (pd.DataFrame): The dataframe containing WSO polar magnetic data.
-        df (pd.DataFrame): The master dataframe containing kinematic data.
-        max_lag_months (int): The maximum forward/backward shift in months. Default is 60.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window. Default False.
+    Bottom: The Cross-Correlation Function (CCF) between the two signals.
     """
-    logging.info("Running Continuous Cross-Correlation Analysis...")
-    
-    # Guard clauses
-    if mag_df is None or mag_df.empty or df is None or df.empty:
-        logging.warning("Skipping CCF Plot: Missing required dataframes.")
-        return
+    print("\n--- Running Continuous Cross-Correlation Analysis ---")
     
     # 1. Normalize timelines to Monthly Start (MS) to ensure a perfect merge
     mag_monthly = mag_df[['Total_Dipole_Strength']].resample('MS').mean()
-    
-    # Ensure unit-consistent naming to prevent KeyErrors
-    if 'Smoothed_Tangential_Acc_km_s2' not in df.columns:
-        logging.error("Missing 'Smoothed_Tangential_Acc_km_s2'. Check smoothing pipeline.")
-        return
-        
-    kin_monthly = df[['Smoothed_Tangential_Acc_km_s2']].resample('MS').mean()
+    kin_monthly = df[['Smoothed_Tangential_Acc']].resample('MS').mean()
     
     # Merge the two datasets strictly where their dates overlap (1976 - Present)
     merged = pd.merge(mag_monthly, kin_monthly, left_index=True, right_index=True, how='inner')
     merged = merged.dropna()
     
     if len(merged) < 50:
-        logging.warning("Not enough overlapping data points to run CCF. Check data alignment.")
+        print("[!] Not enough overlapping data points. Check data alignment.")
         return
         
     # 2. Calculate the Cross-Correlation Function (CCF)
@@ -885,7 +1024,7 @@ def plot_continuous_cross_correlation(
     
     for lag in lags:
         # Shift the kinematic data by 'lag' months
-        shifted_kin = merged['Smoothed_Tangential_Acc_km_s2'].shift(lag)
+        shifted_kin = merged['Smoothed_Tangential_Acc'].shift(lag)
         
         temp = pd.DataFrame({
             'Mag': merged['Total_Dipole_Strength'],
@@ -921,7 +1060,7 @@ def plot_continuous_cross_correlation(
     # Right Y-Axis: Acceleration
     ax1_acc = ax1.twinx()
     ax1_acc.set_ylabel("Tangential Acceleration (km/s²)", fontsize=12, color=color_acc)
-    l2 = ax1_acc.plot(merged.index, merged['Smoothed_Tangential_Acc_km_s2'], color=color_acc, linewidth=2.5, alpha=0.8, label='Tangential Acceleration')
+    l2 = ax1_acc.plot(merged.index, merged['Smoothed_Tangential_Acc'], color=color_acc, linewidth=2.5, alpha=0.8, label='Tangential Acceleration')
     ax1_acc.tick_params(axis='y', labelcolor=color_acc)
     
     # Legend for Top Panel
@@ -962,42 +1101,24 @@ def plot_continuous_cross_correlation(
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    
-    # Save and optionally display
+    filename = f"Magnetic_dipole_vs_tangential_acceleration.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    logging.info(f"Saved CCF plot to {filename}")
-    
-    if show_plot:
-        plt.show()
-        
+     
+    # plt.show()
     plt.close()
 
 
-def plot_raw_acceleration_vs_magnetic_poles(
-    mag_df: pd.DataFrame, 
-    df: pd.DataFrame, 
-    crossing_dates: list,
-    filename: str = "Magnetic_dipole_vs_tangential_acceleration_raw_hf.png",
-    show_plot: bool = False
-) -> None:
+def plot_raw_acceleration_vs_magnetic_poles(mag_df, df, crossing_dates):
     """
-    Creates a stacked 2-panel figure showing the RAW, unfiltered high-frequency signals.
-    
-    Top Box: Raw Tangential Acceleration (The kinematic trigger)
-    Bottom Box: North and South Magnetic Poles (The magnetic reaction)
-
-    Args:
-        mag_df (pd.DataFrame): The dataframe containing raw WSO polar magnetic data.
-        df (pd.DataFrame): The master dataframe containing raw kinematic data.
-        crossing_dates (list): Dates where tangential acceleration crosses zero.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window. Default False.
+    Creates a stacked 2-panel figure showing the RAW, unfiltered signals:
+    Top Box: Raw Tangential Acceleration (The Trigger)
+    Bottom Box: Both North and South Magnetic Poles (The Reaction)
     """
-    if mag_df is None or mag_df.empty:
-        logging.warning("Skipping Plot: No valid magnetic data available.")
+    if mag_df is None or len(mag_df) == 0:
+        print("[!] Skipping Plot: No magnetic data available.")
         return
         
-    logging.info(f"Generating Raw High-Frequency Signals Plot ({filename})...")
+    print("\nGenerating Reversed Raw Signals Plot (Tangential Accel vs. Both Poles)...")
     
     # 1. Align timelines
     start_date = mag_df.index.min()
@@ -1021,6 +1142,7 @@ def plot_raw_acceleration_vs_magnetic_poles(
     ax1.axhline(0, color='black', linestyle='-', linewidth=1.5, alpha=0.8)
     
     ax1.tick_params(axis='y', labelcolor=color_acc)
+    ax1.legend(loc='upper right', framealpha=0.9, fontsize=11)
     ax1.grid(True, alpha=0.3)
 
     # ==========================================
@@ -1050,45 +1172,30 @@ def plot_raw_acceleration_vs_magnetic_poles(
         ax1.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5, label=label)
         ax2.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5)
 
-    # Build the top legend ONCE after all lines (including event markers) are plotted
+    # Add the vertical line to the top legend
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend(handles, labels, loc='upper left', framealpha=0.9, fontsize=11)
 
     plt.xlim(start_date, end_date)
     plt.tight_layout()
 
-    # Safely save and optionally display
+    filename = f"Magnetic_dipole_vs_tangential_acceleration_raw_hf.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    
-    if show_plot:
-        plt.show()
-        
+
+    # plt.show()
     plt.close()
 
-def plot_raw_north_vs_acceleration(
-    mag_df: pd.DataFrame, 
-    df: pd.DataFrame, 
-    crossing_dates: list,
-    filename: str = "Magnetic_north_vs_tangential_acceleration_raw.png",
-    show_plot: bool = False
-) -> None:
+def plot_raw_north_vs_acceleration(mag_df, df, crossing_dates):
     """
-    Creates a stacked 2-panel figure showing the raw, unfiltered signals:
-    Top: Raw North Pole Magnetic Field Strength.
-    Bottom: Raw Tangential Acceleration.
-
-    Args:
-        mag_df (pd.DataFrame): The dataframe containing raw WSO magnetic data.
-        df (pd.DataFrame): The master dataframe containing raw kinematic data.
-        crossing_dates (list): Dates where tangential acceleration crosses zero.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window. Default False.
+    Creates a stacked 2-panel figure showing the RAW, unfiltered signals:
+    Top Box: Raw North Pole Magnetic Field Strength (Positive Polarity)
+    Bottom Box: Raw Tangential Acceleration
     """
-    if mag_df is None or mag_df.empty:
-        logging.warning("Skipping Plot: No valid magnetic data available.")
+    if mag_df is None or len(mag_df) == 0:
+        print("[!] Skipping Plot: No magnetic data available.")
         return
         
-    logging.info(f"Generating Raw Signals Plot: North Pole vs. Tangential Acceleration ({filename})...")
+    print("\nGenerating Raw Signals Plot (North Pole vs. Tangential Accel)...")
     
     # 1. Align timelines
     start_date = mag_df.index.min()
@@ -1097,144 +1204,177 @@ def plot_raw_north_vs_acceleration(
     
     # 2. Setup the Stacked Figure
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
-    fig.subplots_adjust(hspace=0.1) 
+    fig.subplots_adjust(hspace=0.1) # Bring the boxes close together
     
     # ==========================================
     # --- TOP BOX: Raw North Pole Magnetic Field ---
     # ==========================================
-    color_north = '#2980b9' 
+    color_north = '#2980b9' # Deep blue for the North Pole
     
     ax1.set_title("Raw High-Frequency Signals: North Pole Field vs. Tangential Acceleration", fontsize=15, fontweight='bold')
     ax1.set_ylabel("North Pole Field Strength", fontsize=12, color=color_north)
     
+    # Plot raw North Pole data (Positive polarity)
     ax1.plot(mag_df.index, mag_df['North_Pole'], color=color_north, linewidth=1.2, alpha=0.85, label='Raw North Pole Field')
     ax1.axhline(0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
     
     ax1.tick_params(axis='y', labelcolor=color_north)
+    ax1.legend(loc='upper right', framealpha=0.9, fontsize=11)
     ax1.grid(True, alpha=0.3)
-
+    
     # ==========================================
     # --- BOTTOM BOX: Raw Tangential Acceleration ---
     # ==========================================
-    color_acc = '#8e44ad' 
+    color_acc = '#8e44ad' # Violet for acceleration
     
     ax2.set_xlabel("Year", fontsize=12)
     ax2.set_ylabel("Raw Tangential Accel (km/s²)", fontsize=12, color=color_acc)
     
+    # Plot raw acceleration
     ax2.plot(view_df.index, view_df['Tangential_Acc_km_s2'], color=color_acc, linewidth=1.2, alpha=0.85, label='Raw Tangential Acceleration')
     ax2.axhline(0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
     
     ax2.tick_params(axis='y', labelcolor=color_acc)
+    ax2.legend(loc='upper right', framealpha=0.9, fontsize=11)
     ax2.grid(True, alpha=0.3)
     
     # ==========================================
     # --- EVENT MARKERS (Dashed Lines) ---
     # ==========================================
+    # Safely combine and filter the dates
     crossings_in_view = [d for d in crossing_dates if start_date <= d <= end_date]
     
     for i, date in enumerate(crossings_in_view):
         label = 'Accel Zero-Crossing' if i == 0 else ""
+        # Drop the vertical slice through both panels
         ax1.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5, label=label)
         ax2.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5)
 
-    # Build legend ONCE to avoid overwriting labels
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    ax1.legend(handles1, labels1, loc='upper left', framealpha=0.9, fontsize=11)
-    
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    ax2.legend(handles2, labels2, loc='upper right', framealpha=0.9, fontsize=11)
+    # Add the vertical line to the top legend
+    handles, labels = ax1.get_legend_handles_labels()
+    ax1.legend(handles, labels, loc='upper left', framealpha=0.9, fontsize=11)
 
     plt.xlim(start_date, end_date)
     plt.tight_layout()
+    plt.show()
 
-    # Save and optionally display
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    if show_plot:
-        plt.show()
+def plot_raw_south_vs_acceleration(mag_df, df, crossing_dates):
+    """
+    Creates a stacked 2-panel figure showing the RAW, unfiltered signals:
+    Top Box: Raw South Pole Magnetic Field Strength
+    Bottom Box: Raw Tangential Acceleration
+    """
+    if mag_df is None or len(mag_df) == 0:
+        print("[!] Skipping Plot: No magnetic data available.")
+        return
+        
+    print("\nGenerating Raw Signals Plot (South Pole vs. Tangential Accel)...")
     
-    plt.close()
+    # 1. Align timelines
+    start_date = mag_df.index.min()
+    end_date = mag_df.index.max()
+    view_df = df.loc[start_date:end_date]
+    
+    # 2. Setup the Stacked Figure
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+    fig.subplots_adjust(hspace=0.1) # Bring the boxes close together
+    
+    # ==========================================
+    # --- TOP BOX: Raw South Pole Magnetic Field ---
+    # ==========================================
+    color_south = '#c0392b' # Deep red for the South Pole
+    
+    ax1.set_title("Raw High-Frequency Signals: South Pole Field vs. Tangential Acceleration", fontsize=15, fontweight='bold')
+    ax1.set_ylabel("South Pole Field Strength", fontsize=12, color=color_south)
+    
+    # Plot raw South Pole data
+    # Note: South pole data is typically negative, so it will mostly live below the zero line
+    ax1.plot(mag_df.index, mag_df['South_Pole'], color=color_south, linewidth=1.2, alpha=0.85, label='Raw South Pole Field')
+    ax1.axhline(0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
+    
+    ax1.tick_params(axis='y', labelcolor=color_south)
+    ax1.legend(loc='upper right', framealpha=0.9, fontsize=11)
+    ax1.grid(True, alpha=0.3)
+    
+    # ==========================================
+    # --- BOTTOM BOX: Raw Tangential Acceleration ---
+    # ==========================================
+    color_acc = '#8e44ad' # Violet for acceleration
+    
+    ax2.set_xlabel("Year", fontsize=12)
+    ax2.set_ylabel("Raw Tangential Accel (km/s²)", fontsize=12, color=color_acc)
+    
+    # Plot raw acceleration
+    ax2.plot(view_df.index, view_df['Tangential_Acc_km_s2'], color=color_acc, linewidth=1.2, alpha=0.85, label='Raw Tangential Acceleration')
+    ax2.axhline(0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
+    
+    ax2.tick_params(axis='y', labelcolor=color_acc)
+    ax2.legend(loc='upper right', framealpha=0.9, fontsize=11)
+    ax2.grid(True, alpha=0.3)
+    
+    # ==========================================
+    # --- EVENT MARKERS (Dashed Lines) ---
+    # ==========================================
+    # Safely combine and filter the dates if they aren't already combined
+    crossings_in_view = [d for d in crossing_dates if start_date <= d <= end_date]
+    
+    for i, date in enumerate(crossings_in_view):
+        label = 'Accel Zero-Crossing' if i == 0 else ""
+        # Drop the vertical slice through both panels
+        ax1.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5, label=label)
+        ax2.axvline(x=date, color='black', linestyle='--', alpha=0.6, linewidth=1.5)
 
-def add_months_from_max(events_df: pd.DataFrame, solar_max_dates: list) -> pd.DataFrame:
+    # Add the vertical line to the top legend
+    handles, labels = ax1.get_legend_handles_labels()
+    ax1.legend(handles, labels, loc='upper left', framealpha=0.9, fontsize=11)
+
+    plt.xlim(start_date, end_date)
+    plt.tight_layout()
+    plt.show()
+
+def add_months_from_max(events_df, solar_max_dates):
     """
     Calculates the 'Months_From_Max' column by finding the absolute 
-    temporal distance between the event date and the nearest solar maximum.
-
-    Args:
-        events_df (pd.DataFrame): Dataframe containing the 'Date' column.
-        solar_max_dates (list): A list of datetime objects representing 
-                                official solar cycle maxima.
-
-    Returns:
-        pd.DataFrame: The input dataframe with the added 'Months_From_Max' column.
-        
-    Raises:
-        ValueError: If 'Date' column is missing or not datetime-compatible.
+    distance between the event date and the nearest solar maximum.
     """
-    # Guard clause: ensure 'Date' exists and is castable to datetime
-    if 'Date' not in events_df.columns:
-        raise ValueError("Critical Dependency Missing: 'Date' column is required to calculate temporal distance.")
-        
-    # Pre-convert to datetime once to ensure vectorization efficiency
-    events_df['Date'] = pd.to_datetime(events_df['Date'])
-    solar_max_dates = [pd.to_datetime(d) for d in solar_max_dates]
-
-    def get_min_dist(row_date: pd.Timestamp) -> int:
-        # Calculate the absolute difference in months for all max dates
-        distances = [
-            abs((row_date.year - d.year) * 12 + (row_date.month - d.month)) 
-            for d in solar_max_dates
-        ]
+    def get_min_dist(row_date):
+        # --- THE FIX: Convert strings to datetime objects dynamically ---
+        if isinstance(row_date, str):
+            row_date = pd.to_datetime(row_date)
+            
+        # Calculate absolute difference in months for all max dates
+        distances = [abs((row_date.year - d.year) * 12 + (row_date.month - d.month)) 
+                     for d in solar_max_dates]
         return min(distances)
 
-    logging.info("Calculating proximity to solar cycle maxima...")
     events_df['Months_From_Max'] = events_df['Date'].apply(get_min_dist)
-    
     return events_df
 
 
-def plot_spectral_coherence(
-    mag_df: pd.DataFrame, 
-    df: pd.DataFrame, 
-    threshold: float = 0.5,
-    results_file: str = "coherence_results.md"
-) -> None:
+def plot_spectral_coherence(mag_df, df, threshold=0.5):
     """
-    Calculates Spectral Coherence between magnetic dipole strength and 
-    tangential acceleration. Extracts and classifies resonant peaks using 
-    a 5% proportional tolerance, and exports a statistical markdown table.
-
-    Args:
-        mag_df (pd.DataFrame): Dataframe with magnetic polar data.
-        df (pd.DataFrame): Dataframe with kinematic data.
-        threshold (float): Coherence height threshold for peak detection.
-        results_file (str): Filename for the exported Markdown report.
+    Calculates Coherence, extracts peaks, classifies them using a 5% 
+    proportional tolerance, and prints a statistical table with p-values.
     """
-    if mag_df is None or mag_df.empty:
-        logging.warning("Skipping Coherence Analysis: No magnetic data available.")
+    if mag_df is None or len(mag_df) == 0:
+        print("[!] Skipping Plot: No magnetic data available.")
         return
         
-    logging.info("Running Spectral Coherence (Fourier) Analysis...")
+    print("\n--- Running Spectral Coherence (Fourier) Analysis ---")
     
     # 1. Normalize timelines
     mag_monthly = mag_df[['Total_Dipole_Strength']].resample('MS').mean()
-
-    # Unit-consistent naming verified to prevent KeyErrors
-    if 'Smoothed_Tangential_Acc_km_s2' not in df.columns:
-        logging.error("Pipeline Error: Column 'Smoothed_Tangential_Acc_km_s2' not found. "
-                      "Ensure apply_zero_phase_smoothing has been called.")
-        return
-
-    kin_monthly = df[['Smoothed_Tangential_Acc_km_s2']].resample('MS').mean()
+    kin_monthly = df[['Smoothed_Tangential_Acc']].resample('MS').mean()
     
     merged = pd.merge(mag_monthly, kin_monthly, left_index=True, right_index=True, how='inner').dropna()
     
     if len(merged) < 100:
-        logging.warning("Not enough data points for a robust Fourier Transform.")
+        print("[!] Not enough data points for a robust Fourier Transform.")
         return
 
     # 2. Extract arrays
     mag_sig = merged['Total_Dipole_Strength'].values
-    kin_sig = merged['Smoothed_Tangential_Acc_km_s2'].values
+    kin_sig = merged['Smoothed_Tangential_Acc'].values
     
     # 3. Calculate Coherence
     nperseg = min(len(merged), 12 * 22) 
@@ -1266,7 +1406,7 @@ def plot_spectral_coherence(
         (0.396, "Synodic",  "Venus-Mercury Synodic Period (~0.40 yr)")
     ]
 
-    def classify_peak(period_yr: float) -> tuple:
+    def classify_peak(period_yr):
         if period_yr == float('inf'):
             return "Trend", "DC component (Infinite period)"
         
@@ -1291,9 +1431,6 @@ def plot_spectral_coherence(
         coh = coherence[p]
         period_years = 1 / freq if freq > 0 else float('inf')
         period_months = period_years * 12
-        
-        # Approximate p-value calculation. 
-        # Note: True significance is slightly lower due to upstream zero-phase filtering.
         p_val = (1.0 - coh) ** (nd_segments - 1) if nd_segments > 1 else 1.0
         
         p_type, p_comment = classify_peak(period_years)
@@ -1307,62 +1444,45 @@ def plot_spectral_coherence(
             'comment': p_comment
         })
 
-    # Filter out periods shorter than the 1.5-year (18 month) cutoff to remove Nyquist noise
-    peak_data = [row for row in peak_data if row['period_yr'] >= 1.5]
+    # Filter out periods shorter than your 1.5-year (18 month) cutoff
+    peak_data = [row for row in peak_data if row['period_yr'] >= 0.5]
 
     # Sort the peaks by Period (Longest to Shortest)
     peak_data.sort(key=lambda x: x['period_yr'], reverse=True)
 
-    # Write Markdown file parametrically
-    with open(results_file, 'w') as f:
+
+    # Write Markdown file
+    with open('coherence_results.md', 'w') as f:
         f.write("### Significant Resonant Peaks\n\n")
         f.write("| Period (Yrs) | Coherence (r²) | p-value | Classification | Comment |\n")
         f.write("| :--- | :--- | :--- | :--- | :--- |\n")
         for d in peak_data:
             f.write(f"| {d['period_yr']:.2f} | {d['coherence']:.4f} | {d['p_value']:.4f} | {d['type']} | {d['comment']} |\n")
 
-    logging.info(f"Results successfully exported: '{results_file}'")
+    print("\n[✓] Results exported:'coherence_results.md'")
 
 
-def plot_sun_barycenter_magnetic_trajectory(
-    mag_df: pd.DataFrame, 
-    ephemeris_file: str = 'de440.bsp',
-    filename: str = "Sun_Barycentric_Orbit_and_Magnetic_Field.png",
-    show_plot: bool = False
-) -> None:
-    """
-    Plots the Sun's 2D orbital trajectory around the Solar System Barycenter (SSB).
+def plot_sun_barycenter_magnetic_trajectory():
+    print("Loading WSO Magnetic Data...")
+    mag_df = magnetic_data
     
-    The trajectory's line width is mapped to the Total Magnetic Dipole Strength, 
-    and the color is mapped to the overarching Magnetic Polarity (North/South).
-
-    Args:
-        mag_df (pd.DataFrame): The dataframe containing WSO polar magnetic data.
-        ephemeris_file (str): Local path to the JPL ephemeris file. Default is 'de440.bsp'.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window. Default False.
-    """
-    if mag_df is None or mag_df.empty:
-        logging.warning("Skipping Barycenter Plot: No valid magnetic data available.")
-        return
-        
-    logging.info("Generating Barycentric Orbit and Magnetic Field Plot...")
-    
-    # Resample to monthly to match standard orbital smoothing and reduce noise
+    # Resample to monthly to match standard orbital smoothing
     mag_monthly = mag_df[['Total_Dipole_Strength', 'North_Pole', 'South_Pole']].resample('MS').mean().dropna()
     
-    logging.info(f"Calculating Sun's geometry via Skyfield ({ephemeris_file})...")
-    eph = load(ephemeris_file)
+    print("Calculating Sun's position relative to the Solar System Barycenter...")
+    # Load Skyfield Ephemeris
+    eph = load('de421.bsp')
     sun = eph['sun']
+    # ssb = eph['solar system barycenter']
     ts = load.timescale()
     
-    # Skyfield Timescale Conversion
-    # Skyfield requires pure Python datetimes with explicit UTC localization. 
+    # Create timescales matching your magnetic data dates
+    # FIX: Localize to UTC, then convert to pure Python datetimes so Skyfield can mutate the array
     dates = mag_monthly.index.tz_localize('UTC').to_pydatetime()
+    # FIX: Use from_datetimes (plural) for an array of dates!
     t = ts.from_datetimes(dates)
     
-    # Get the pure, instantaneous geometric position of the Sun relative to the Barycenter.
-    # Evaluating a target body natively defaults the origin to the SSB.
+    # Get the pure, instantaneous geometric position of the Sun relative to the Barycenter
     pos_au = sun.at(t).position.au
     x, y = pos_au[0], pos_au[1]  # Extracting X and Y coordinates on the ecliptic plane
 
@@ -1407,6 +1527,7 @@ def plot_sun_barycenter_magnetic_trajectory(
     ax.set_title("The Sun's Barycentric Orbit & Magnetic Field\n(Width = Dipole Strength | Color = Magnetic Polarity)", fontsize=16, fontweight='bold')
     
     # Custom Graphic Legend
+    from matplotlib.lines import Line2D
     custom_lines = [
         Line2D([0], [0], color='#e74c3c', lw=5, label='Positive Polarity (North +)'),
         Line2D([0], [0], color='#3498db', lw=5, label='Negative Polarity (North -)'),
@@ -1424,50 +1545,83 @@ def plot_sun_barycenter_magnetic_trajectory(
     ax.grid(True, alpha=0.3, linestyle='--')
     plt.tight_layout()
 
-    # Safely save and optionally display
+    filename = f"Sun_Barycentric_Orbit_and_Magnetic_Field.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    logging.info(f"Saved trajectory plot to {filename}")
     
-    if show_plot:
-        plt.show()
-        
+    # plt.show()
     plt.close()
 
+def test_reversal_phase_amplitude(cycles_df):
+    """
+    Tests if solar cycles with a magnetic reversal during the rising phase 
+    have a significantly lower amplitude than those with a reversal in the declining phase.
+    """
+    print("\n--- Statistical Test: Reversal Phase vs. Cycle Amplitude ---")
+    
+    # 1. Isolate the two groups based on when the reversal happened
+    rising_reversals = cycles_df[cycles_df['Phase'] == 'Rising']['Amplitude']
+    declining_reversals = cycles_df[cycles_df['Phase'] == 'Declining']['Amplitude']
+    
+    # 2. Check if we have enough data points to run the math
+    if len(rising_reversals) < 2 or len(declining_reversals) < 2:
+        print("Error: Not enough data points in one or both groups to perform a t-test.")
+        return None, None
+        
+    # 3. Print Descriptive Statistics
+    print(f"[Reversal during Rising Phase]")
+    print(f"Count: {len(rising_reversals)} cycles | Mean Amplitude: {rising_reversals.mean():.1f}")
+    
+    print(f"\n[Reversal during Declining Phase]")
+    print(f"Count: {len(declining_reversals)} cycles | Mean Amplitude: {declining_reversals.mean():.1f}")
+    
+    # 4. Perform Welch's T-Test (One-Sided)
+    # We use alternative='less' because the hypothesis is that Rising < Declining.
+    # equal_var=False uses Welch's t-test, which is safer for unequal sample sizes.
+    t_stat, p_value = stats.ttest_ind(
+        rising_reversals, 
+        declining_reversals, 
+        alternative='less', 
+        equal_var=False
+    )
+    
+    print(f"\n--- T-Test Results ---")
+    print(f"T-Statistic: {t_stat:.4f}")
+    print(f"P-Value: {p_value:.4e}")
+    
+    # 5. Conclusion
+    alpha = 0.05
+    if p_value < alpha:
+        print("\nResult: SIGNIFICANT.")
+        print("Conclusion: Cycles that reverse during the rising phase have a statistically confirmed LOWER amplitude.")
+    else:
+        print("\nResult: NOT SIGNIFICANT.")
+        print("Conclusion: There is not enough statistical evidence to prove that a rising phase reversal dampens the cycle's amplitude.")
+        
+    return t_stat, p_value
 
-def test_historic_kinematic_reversals(
-    df: pd.DataFrame, 
-    crossing_dates: list,
-    min_cycle_months: int = 100,
-    cycle_offset: int = 0,
-    n_permutations: int = 10000,
-    random_seed: int = 42,
-    results_file: str = 'historic_kinematic_reversals.md'
-) -> pd.DataFrame:
+def test_historic_kinematic_reversals(df, crossing_dates):
     """
     Extracts historical solar cycles and tests the Phase Disruption Hypothesis.
     
     Isolates each solar cycle using its sunspot minimums, identifies the first 
-    kinematic zero-crossing within that cycle, and classifies the phase. Results 
-    and statistical tests are exported to a Markdown table.
+    kinematic zero-crossing within that cycle, and classifies whether the 
+    torque event occurred during the 'Rising' or 'Declining' phase. Results 
+    are exported to a Markdown table for documentation.
 
     Args:
         df (pd.DataFrame): The dataset containing 'Smoothed_SSN'.
         crossing_dates (list): Datetime indexes of all kinematic zero-crossings.
-        min_cycle_months (int): Minimum months between cycle minimums. Default is 100.
-        cycle_offset (int): Offset to apply to cycle numbering if dataset doesn't 
-                            start at Cycle 1. Default is 0.
-        n_permutations (int): Number of resamples for the permutation test. Default 10000.
-        random_seed (int): Seed for reproducibility in the permutation test. Default 42.
-        results_file (str): Output filename for the Markdown report.
 
     Returns:
         pd.DataFrame: A formatted table of historical cycles and their phase classifications.
     """
-    logging.info("Building Historic Cycle Summary (Kinematic Proxy)...")
+    print("\n--- Building Historic Cycle Summary (Kinematic Proxy) ---")
     
     # 1. Automatically Identify Solar Cycle Boundaries (Minimums)
+    # By inverting the SSN, we can use find_peaks to locate the valleys.
+    # A distance of 100 months (~8.3 years) ensures we don't double-count noisy minimums.
     ssn_clean = df['Smoothed_SSN'].dropna()
-    min_indices, _ = signal.find_peaks(-ssn_clean, distance=min_cycle_months)
+    min_indices, _ = signal.find_peaks(-ssn_clean, distance=100)
     cycle_min_dates = ssn_clean.iloc[min_indices].index
     
     cycle_data = []
@@ -1488,16 +1642,19 @@ def test_historic_kinematic_reversals(
         crossings_in_cycle = [d for d in crossing_dates if start_date <= d < end_date]
         
         if not crossings_in_cycle:
-            continue
+            continue  # Skip if no crossing happened
             
-        # The first crossing triggers the internal disruption
+        # The first crossing triggers the internal disruption / phase shift
         first_crossing = crossings_in_cycle[0]
         
-        # Classify the Phase (Standardized vocabulary)
-        phase = 'Rising Phase' if first_crossing < max_date else 'Decreasing Phase'
+        # Classify the Phase
+        if first_crossing < max_date:
+            phase = 'Rising'
+        else:
+            phase = 'Declining'
             
         cycle_data.append({
-            'Cycle_Index': i + 1 + cycle_offset,
+            'Cycle_Index': i + 1,
             'Start_Date': start_date.strftime('%Y-%m'),
             'Max_Date': max_date.strftime('%Y-%m'),
             'Amplitude': round(max_ssn, 1),
@@ -1507,12 +1664,8 @@ def test_historic_kinematic_reversals(
         
     cycles_df = pd.DataFrame(cycle_data)
 
-    if cycles_df.empty:
-        logging.warning("No complete cycles with kinematic crossings found.")
-        return cycles_df
-
-    # Write initial cycle table
-    with open(results_file, 'w') as f:
+    filename = 'historic_kinematic_reversals.md'
+    with open(filename, 'w') as f:
         f.write("# Historic Kinematic Solar Cycle Summary\n\n")
         f.write(f"Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d')}\n\n")
         f.write("| Cycle | Start | Max | Amplitude | Kinematic Event | Phase |\n")
@@ -1521,126 +1674,104 @@ def test_historic_kinematic_reversals(
         for _, row in cycles_df.iterrows():
             f.write(f"| {row['Cycle_Index']} | {row['Start_Date']} | {row['Max_Date']} | "
                     f"{row['Amplitude']} | {row['Kinematic_Reversal']} | {row['Reversal_Phase']} |\n")
+                    
+    print(f"[✓] Analysis complete. Data exported to '{filename}'") 
 
-    logging.info(f"Successfully mapped {len(cycles_df)} historic solar cycles.")
+    print(f"Successfully mapped {len(cycles_df)} historic solar cycles.")
 
-    # 3. Run the Statistical Tests
-    logging.info("Statistical Test: Kinematic Proxy vs. Cycle Amplitude...")
+    # 3. Run the Statistical T-Test on the massive historical dataset
+    print("\n--- Statistical Test: Kinematic Proxy vs. Cycle Amplitude ---")
     
-    rising_reversals = cycles_df[cycles_df['Reversal_Phase'] == 'Rising Phase']['Amplitude']
-    decreasing_reversals = cycles_df[cycles_df['Reversal_Phase'] == 'Decreasing Phase']['Amplitude']
+    rising_reversals = cycles_df[cycles_df['Reversal_Phase'] == 'Rising']['Amplitude']
+    declining_reversals = cycles_df[cycles_df['Reversal_Phase'] == 'Declining']['Amplitude']
     
-    if len(rising_reversals) < 2 or len(decreasing_reversals) < 2:
-        logging.warning("Not enough data points to run statistical tests. Skipping math.")
+    if len(rising_reversals) < 2 or len(declining_reversals) < 2:
+        print("Error: Not enough data points to run t-test.")
         return cycles_df
         
-    # Welch's T-Test 
+    # Welch's T-Test (One-Sided: hypothesis is Rising < Declining)
     t_stat, p_value = stats.ttest_ind(
         rising_reversals, 
-        decreasing_reversals, 
+        declining_reversals, 
         alternative='less', 
         equal_var=False
     )
 
-    # Permutation Test
+    # Calculate Statistical Significance using a Permutation Test
+    n_permutations = 10000
     res = stats.permutation_test(
-        (decreasing_reversals, rising_reversals), 
+        (declining_reversals, rising_reversals), # Note: using your previous variable names
         statistic=lambda x, y: np.mean(x) - np.mean(y), 
         permutation_type='independent', 
         alternative='greater', 
         n_resamples=n_permutations,
-        random_state=random_seed
+        random_state=42
     )
 
-    # Median Suppression Calculation
+    # 3. Median Suppression Calculation
     rising_median = rising_reversals.median()
-    decreasing_median = decreasing_reversals.median()
-    suppression_pct = ((decreasing_median - rising_median) / decreasing_median) * 100
+    declining_median = declining_reversals.median()
+    suppression_pct = ((declining_median - rising_median) / declining_median) * 100
 
-    # Append Statistics to Markdown
-    with open(results_file, 'a') as f:
-        f.write(f"\n## Statistical Test: Rising vs. Decreasing Phase\n")
-        f.write(f"| Metric | Rising Phase | Decreasing Phase |\n")
+
+    # Append ALL Statistics to the Markdown file
+    with open(filename, 'a') as f:
+        f.write(f"\n## Statistical Test: Rising vs. Declining Phase\n")
+        f.write(f"| Metric | Rising Phase | Declining/Min Phase |\n")
         f.write(f"| :--- | :--- | :--- |\n")
-        f.write(f"| **Count** | {len(rising_reversals)} | {len(decreasing_reversals)} |\n")
-        f.write(f"| **Mean Amplitude** | {rising_reversals.mean():.1f} | {decreasing_reversals.mean():.1f} |\n")
-        f.write(f"| **Median Amplitude** | **{rising_median:.1f}** | **{decreasing_median:.1f}** |\n\n")
+        f.write(f"| **Count** | {len(rising_reversals)} | {len(declining_reversals)} |\n")
+        f.write(f"| **Mean Amplitude** | {rising_reversals.mean():.1f} | {declining_reversals.mean():.1f} |\n")
+        f.write(f"| **Median Amplitude** | **{rising_median:.1f}** | **{declining_median:.1f}** |\n\n")
         
         f.write(f"### The Amplitude Ceiling (Median Analysis)\n")
-        f.write(f"Because standard means can be skewed by historical outliers, comparing the median amplitude provides a highly robust metric. "
-                f"Cycles experiencing a natural kinematic reversal achieve a median amplitude of **{decreasing_median:.1f}**, "
+        f.write(f"Because standard means can be skewed by historical outliers (e.g., Solar Cycle 19), "
+                f"comparing the median amplitude provides a highly robust, non-parametric metric. "
+                f"Cycles that experience a natural kinematic reversal achieve a median amplitude of **{declining_median:.1f}**, "
                 f"whereas cycles prematurely disrupted in their Rising Phase are constructively capped at a median of **{rising_median:.1f}**. "
                 f"This represents a **{suppression_pct:.1f}% systemic suppression** of the solar dynamo.\n\n")
         
-        f.write(f"### Parametric Validation (Welch's T-Test)\n")
-        f.write(f"- **T-Statistic:** {t_stat:.4f}\n")
-        f.write(f"- **P-Value:** `{p_value:.5f}`\n\n")
-        
-        f.write(f"### Advanced Validation (Non-Parametric Permutation Test)\n")
-        f.write(f"To rigorously validate this delta without relying on Gaussian assumptions, we conducted a permutation test.\n\n")
+        f.write(f"### Advanced Validation: Permutation Test\n")
+        f.write(f"To rigorously validate this delta without relying on bell-curve assumptions, we conducted a non-parametric permutation test.\n\n")
         f.write(f"- **Resamples:** {n_permutations:,}\n")
         f.write(f"- **Observed Difference in Means:** {res.statistic:.2f} sunspots\n")
         f.write(f"- **Empirical P-Value:** `{res.pvalue:.5f}`\n\n")
         
-        if res.pvalue < 0.05:
-            f.write(f"**Conclusion:** The result is statistically significant. It is mathematically improbable (p < 0.05) "
+        if res.pvalue < 0.01:
+            f.write(f"**Conclusion:** The result is highly significant. It is mathematically improbable (p < 0.01) "
                     f"that the observed {suppression_pct:.1f}% amplitude suppression occurred by random chance.")
-            
-    logging.info(f"Statistical results successfully appended to '{results_file}'") 
 
     return cycles_df
 
-
-def plot_reversal_amplitudes_stacked(
-    cycles_df: pd.DataFrame,
-    n_permutations: int = 10000,
-    random_seed: int = 42,
-    filename: str = "Impact_of_reversal_on_solar_cycle_amplitude.png",
-    show_plot: bool = False
-) -> None:
+def plot_reversal_amplitudes_stacked(cycles_df):
     """
     Visualizes the statistical impact of phase-dependent torque on cycle amplitude.
     
     Generates a dual-layout plot featuring a jittered boxplot and vertically stacked 
     histograms. Calculates and annotates statistical significance dynamically using 
-    a Permutation Test. Includes Mean and Median markers.
-
-    Args:
-        cycles_df (pd.DataFrame): Dataframe of historical solar cycles and phase classifications.
-        n_permutations (int): Number of resamples for the permutation test. Default 10000.
-        random_seed (int): Seed for reproducibility in the permutation test. Default 42.
-        filename (str): Output filename for the saved plot.
-        show_plot (bool): If True, displays the plot in a window. Default False.
+    a 10,000-resample Permutation Test. Includes Mean and Median markers.
     """
-    if cycles_df is None or cycles_df.empty:
-        logging.warning("Skipping Amplitude Stacked Plot: No cycle data available.")
-        return
-
-    logging.info("Generating Stacked Amplitude vs. Phase Visualization...")
+    print("\nGenerating Stacked Amplitude vs. Phase Visualization...")
     
-    # Isolate the data using strictly uniform vocabulary from the upstream pipeline
-    rising = cycles_df[cycles_df['Reversal_Phase'] == 'Rising Phase']['Amplitude'].dropna()
-    decreasing = cycles_df[cycles_df['Reversal_Phase'] == 'Decreasing Phase']['Amplitude'].dropna()
+    # Isolate the data and calculate N
+    rising = cycles_df[cycles_df['Reversal_Phase'] == 'Rising']['Amplitude'].dropna()
+    declining = cycles_df[cycles_df['Reversal_Phase'] == 'Declining']['Amplitude'].dropna()
     
-    if len(rising) == 0 or len(decreasing) == 0:
-        logging.warning("Insufficient phase data to generate stacked amplitude plots.")
-        return
-
     mean_rise = rising.mean()
-    mean_dec = decreasing.mean()
+    mean_dec = declining.mean()
     median_rise = rising.median()    
-    median_dec = decreasing.median()
+    median_dec = declining.median()
     n_rise = len(rising)
-    n_dec = len(decreasing)
+    n_dec = len(declining)
 
     # Calculate Statistical Significance using a Permutation Test
+    n_permutations = 10000
     res = stats.permutation_test(
-        (decreasing, rising), 
+        (declining, rising), 
         statistic=lambda x, y: np.mean(x) - np.mean(y), 
         permutation_type='independent', 
         alternative='greater', 
         n_resamples=n_permutations,
-        random_state=random_seed
+        random_state=42
     )
 
     # --- Generate the Automated Interpretation ---
@@ -1663,8 +1794,8 @@ def plot_reversal_amplitudes_stacked(
     # ==========================================
     ax_box = fig.add_subplot(gs[:, 0]) 
     
-    box = ax_box.boxplot([rising, decreasing], 
-                     tick_labels=['Rising Phase\n(Premature Disruption)', 'Decreasing Phase\n(Natural Reversal)'],
+    box = ax_box.boxplot([rising, declining], 
+                     tick_labels=['Rising Phase\n(Premature Disruption)', 'Declining Phase\n(Natural Reversal)'],
                      patch_artist=True,
                      widths=0.5,
                      medianprops=dict(color='black', linewidth=2.5),
@@ -1678,7 +1809,7 @@ def plot_reversal_amplitudes_stacked(
     # Jittered Scatter Overlay
     ax_box.scatter(np.random.normal(1, 0.05, size=n_rise), rising, 
                color='darkred', edgecolor='white', s=50, alpha=0.9, zorder=3)
-    ax_box.scatter(np.random.normal(2, 0.05, size=n_dec), decreasing, 
+    ax_box.scatter(np.random.normal(2, 0.05, size=n_dec), declining, 
                color='darkblue', edgecolor='white', s=50, alpha=0.9, zorder=3)
 
     ax_box.set_title('Statistical Distribution (Boxplot)', fontsize=14, fontweight='bold')
@@ -1703,8 +1834,8 @@ def plot_reversal_amplitudes_stacked(
     # ==========================================
     # --- CALCULATE SHARED BINS ---
     # ==========================================
-    bins = np.linspace(min(rising.min(), decreasing.min()) - 10, 
-                       max(rising.max(), decreasing.max()) + 10, 12)
+    bins = np.linspace(min(rising.min(), declining.min()) - 10, 
+                       max(rising.max(), declining.max()) + 10, 12)
 
     # ==========================================
     # --- SUBPLOT 2 (TOP RIGHT): RISING PHASE ---
@@ -1713,6 +1844,7 @@ def plot_reversal_amplitudes_stacked(
     
     ax_rise.hist(rising, bins=bins, color='#e74c3c', alpha=0.8, edgecolor='white', label=f'Cycles (N={n_rise})')
     
+    # --- NEW: Plot Mean and Median ---
     ax_rise.axvline(mean_rise, color='darkred', linestyle='dashed', linewidth=2.5, label=f'Mean ({mean_rise:.0f})')
     ax_rise.axvline(median_rise, color='black', linestyle='dotted', linewidth=2.5, label=f'Median ({median_rise:.0f})')
     
@@ -1723,16 +1855,17 @@ def plot_reversal_amplitudes_stacked(
     ax_rise.yaxis.set_major_locator(MaxNLocator(integer=True))
 
     # ==========================================
-    # --- SUBPLOT 3 (BOTTOM RIGHT): DECREASING PHASE ---
+    # --- SUBPLOT 3 (BOTTOM RIGHT): DECLINING PHASE ---
     # ==========================================
     ax_dec = fig.add_subplot(gs[1, 1], sharex=ax_rise) 
     
-    ax_dec.hist(decreasing, bins=bins, color='#3498db', alpha=0.8, edgecolor='white', label=f'Cycles (N={n_dec})')
+    ax_dec.hist(declining, bins=bins, color='#3498db', alpha=0.8, edgecolor='white', label=f'Cycles (N={n_dec})')
     
+    # --- NEW: Plot Mean and Median ---
     ax_dec.axvline(mean_dec, color='darkblue', linestyle='dashed', linewidth=2.5, label=f'Mean ({mean_dec:.0f})')
     ax_dec.axvline(median_dec, color='black', linestyle='dotted', linewidth=2.5, label=f'Median ({median_dec:.0f})')
     
-    ax_dec.set_title('Population Density: Natural Decreasing Reversal', fontsize=12, fontweight='bold')
+    ax_dec.set_title('Population Density: Natural Declining Reversal', fontsize=12, fontweight='bold')
     ax_dec.set_xlabel('Maximum Sunspot Number (Amplitude)', fontsize=12, fontweight='bold')
     ax_dec.set_ylabel('Number of Cycles', fontsize=10, fontweight='bold')
     ax_dec.grid(axis='y', linestyle='--', alpha=0.7)
@@ -1743,102 +1876,66 @@ def plot_reversal_amplitudes_stacked(
     plt.suptitle('Impact of Kinematic Reversal Phase on Solar Cycle Amplitude', fontsize=16, fontweight='bold', y=0.98)
     plt.tight_layout()
 
-    # Safely save and optionally display
+    filename = f"Impact_of_reversal_on_solar_cycle_amplitude.png"
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    logging.info(f"Saved stacked amplitude plot to {filename}")
-    
-    if show_plot:
-        plt.show()
-        
     plt.close()
 
-def run_leave_one_out_analysis(
-    cycles_df: pd.DataFrame,
-    n_permutations: int = 10000,
-    random_seed: int = 42,
-    results_file: str = "historic_kinematic_reversals.md"
-) -> pd.DataFrame:
+def run_leave_one_out_analysis(cycles_df):
     """
-    Performs a Leave-One-Out (LOO) sensitivity analysis to test statistical robustness.
-    
-    Ensures no single solar cycle is disproportionately driving the statistical 
-    significance or the median amplitude suppression delta. Results are appended 
-    to the specified Markdown file.
-
-    Args:
-        cycles_df (pd.DataFrame): Dataframe of historical solar cycles and phase classifications.
-        n_permutations (int): Number of resamples for the permutation test. Default 10000.
-        random_seed (int): Seed for reproducibility in the permutation test. Default 42.
-        results_file (str): Target Markdown file to append the analysis to.
-
-    Returns:
-        pd.DataFrame: A dataframe containing the LOO results for each dropped cycle.
+    Performs a Leave-One-Out (LOO) sensitivity analysis to ensure 
+    no single solar cycle is disproportionately driving the statistical 
+    significance OR the median suppression delta. Appends results to Markdown.
     """
-    logging.info("Running Leave-One-Out (Jackknife) Sensitivity Analysis...")
+    print("\n--- Running Leave-One-Out Sensitivity Analysis ---")
     
-    if cycles_df is None or cycles_df.empty:
-        logging.warning("Skipping LOO Analysis: No cycle data available.")
-        return pd.DataFrame()
-
     loo_results = []
+    n_permutations = 10000
     
     for index, row in cycles_df.iterrows():
         # Drop the current cycle to test the model without it
         test_df = cycles_df.drop(index)
         
-        # Split into the two phase groups using strict standardized vocabulary
-        rising = test_df[test_df['Reversal_Phase'] == 'Rising Phase']['Amplitude'].dropna()
-        decreasing = test_df[test_df['Reversal_Phase'] == 'Decreasing Phase']['Amplitude'].dropna()
+        # Split into the two phase groups
+        rising = test_df[test_df['Reversal_Phase'] == 'Rising']['Amplitude']
+        declining = test_df[test_df['Reversal_Phase'] == 'Declining']['Amplitude']
         
-        # Guard clause: Permutation tests require at least 2 samples per group
-        if len(rising) < 2 or len(decreasing) < 2:
-            logging.warning(f"Skipping LOO iteration for Cycle {row['Cycle_Index']}: Insufficient phase data.")
-            continue
-            
         # 1. Rerun the permutation test
         res = stats.permutation_test(
-            (decreasing, rising), 
+            (declining, rising), 
             statistic=lambda x, y: np.mean(x) - np.mean(y), 
             permutation_type='independent', 
             alternative='greater', 
             n_resamples=n_permutations,
-            random_state=random_seed
+            random_state=42
         )
         
         # 2. Recalculate the Medians
         r_med = rising.median()
-        d_med = decreasing.median()
-        
-        # Protect against division by zero if decreasing median somehow hits 0
-        if d_med == 0:
-            suppression = np.nan
-        else:
-            suppression = ((d_med - r_med) / d_med) * 100
+        d_med = declining.median()
+        suppression = ((d_med - r_med) / d_med) * 100
         
         loo_results.append({
             'Dropped_Cycle': row['Cycle_Index'],
             'Dropped_Phase': row['Reversal_Phase'],
             'New_P_Value': res.pvalue,
             'New_Rising_Median': r_med,
-            'New_Decreasing_Median': d_med,
+            'New_Declining_Median': d_med,
             'New_Suppression_Pct': suppression
         })
         
     loo_df = pd.DataFrame(loo_results)
     
-    if loo_df.empty:
-        logging.error("LOO Analysis failed to generate results.")
-        return loo_df
-    
     # Identify the worst-case scenarios
     worst_p = loo_df.loc[loo_df['New_P_Value'].idxmax()]
     worst_suppression = loo_df.loc[loo_df['New_Suppression_Pct'].idxmin()]
     
-    logging.info(f"Worst-case P-Value: {worst_p['New_P_Value']:.5f} (Dropping Cycle {worst_p['Dropped_Cycle']})")
-    logging.info(f"Worst-case Suppression: {worst_suppression['New_Suppression_Pct']:.1f}% (Dropping Cycle {worst_suppression['Dropped_Cycle']})")
+    # Console Output
+    print(f"Worst-case P-Value: {worst_p['New_P_Value']:.5f} (Occurs when dropping Cycle {worst_p['Dropped_Cycle']})")
+    print(f"Worst-case Suppression: {worst_suppression['New_Suppression_Pct']:.1f}% (Occurs when dropping Cycle {worst_suppression['Dropped_Cycle']})")
     
-    # --- Append to the Markdown File ---
-    with open(results_file, 'a') as f:
+    # --- NEW: Append to the Markdown File ---
+    filename = 'historic_kinematic_reversals.md'
+    with open(filename, 'a') as f:
         f.write(f"\n## Sensitivity Analysis: Leave-One-Out (Jackknife)\n")
         f.write(f"To ensure the statistical significance and amplitude suppression are not artificially driven by a single historical outlier, we performed a Leave-One-Out (Jackknife) resampling analysis.\n\n")
         
@@ -1846,121 +1943,131 @@ def run_leave_one_out_analysis(
         f.write(f"- **Worst-Case Suppression:** **{worst_suppression['New_Suppression_Pct']:.1f}%** *(Occurs if Cycle {worst_suppression['Dropped_Cycle']} is removed)*\n\n")
         
         if worst_p['New_P_Value'] < 0.05 and worst_suppression['New_Suppression_Pct'] > 25.0:
-            f.write(f"**Conclusion:** The model is **HIGHLY ROBUST**. Even in the absolute worst-case scenario (dropping the most influential historical cycles), the mathematical probability remains significant and the physical amplitude ceiling holds.\n")
-            logging.info("[✓] Model is ROBUST. The Amplitude Ceiling holds regardless of which cycle is removed.")
+            f.write(f"**Conclusion:** The model is **HIGHLY ROBUST**. Even in the absolute worst-case scenario (dropping the most influential historical cycles), the mathematical probability remains significant and the physical amplitude ceiling holds.")
+            print("[✓] Model is ROBUST. The Amplitude Ceiling holds regardless of which cycle is removed.")
         else:
-            f.write(f"**Conclusion:** The model exhibits fragility. A single cycle is disproportionately propping up the metrics.\n")
-            logging.warning("[!] Model is FRAGILE. A single cycle is heavily propping up the metrics.")
+            f.write(f"**Conclusion:** The model exhibits fragility. A single cycle is disproportionately propping up the metrics.")
+            print("[!] Model is FRAGILE. A single cycle is heavily propping up the metrics.")
 
-    logging.info(f"[✓] Leave-One-Out analysis successfully appended to '{results_file}'")
+    print(f"[✓] Leave-One-Out analysis successfully appended to '{filename}'")
     
     return loo_df
 
 if __name__ == "__main__":
-    import logging
-    
-    # Configure logging for the entire pipeline
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-    
-    # =========================================================================
-    # --- PIPELINE CONFIGURATION ---
-    # Toggle these flags to True/False to control which parts of the analysis run
-    # =========================================================================
-    RUN_STATISTICAL_TESTS = True
-    RUN_SENSITIVITY_LOO = True
-    
-    # Visualization Toggles
-    GENERATE_GRID_PLOTS = True
-    GENERATE_UNIFIED_STACK = True
-    GENERATE_RAW_COMPARISONS = True
-    GENERATE_SPECTRAL_COHERENCE = True
-    GENERATE_BARYCENTER_PLOT = True
-    GENERATE_STACKED_AMPLITUDE_PLOT = True
-    # =========================================================================
 
-    logging.info("Initializing Solar Kinematic Torque Model Pipeline...")
-
-    # ==========================================
-    # --- PHASE 1: DATA ACQUISITION & PREP ---
-    # ==========================================
     # 1. Fetch or load the cached sunspot data
     historical_sunspots = load_smoothed_sunspots()
     
-    # 2. Fetch the Raw Magnetic Data (Requires local wso_polar.txt)
-    try:
-        magnetic_data = load_wso_magnetic_data()
-    except FileNotFoundError as e:
-        logging.error(e)
-        magnetic_data = None
-
-    # ==========================================
-    # --- PHASE 2: KINEMATIC PROCESSING ---
-    # ==========================================
-    # 1. Append the Solar System Barycenter kinematics
+    # 2. Append the predicted Hathaway curve
+    historical_sunspots = append_predicted_series(historical_sunspots)
+    
+    # 3. Append the Solar System Barycenter kinematics
     historical_sunspots = append_sun_kinematics(historical_sunspots)
 
-    # 2. Apply Zero-Phase Smoothing to the kinematics to remove decadal noise
+
+# 2. Calculate Angular Momentum (BEFORE smoothing everything else)
+    # historical_sunspots = calculate_angular_momentum(historical_sunspots)
+    historical_sunspots = calculate_kinetic_energy(historical_sunspots)
+
+# --- FAILSAFE: Backup the angular momentum columns ---
+    saved_momentum_cols = {}
+    for col in ['Angular_Momentum_Raw', 'Smoothed_Angular_Momentum']:
+        if col in historical_sunspots.columns:
+            saved_momentum_cols[col] = historical_sunspots[col]
+
+    # 4. Apply Zero-Phase Smoothing to the kinematics
+    # historical_sunspots = apply_zero_phase_smoothing(historical_sunspots, window=80)
     historical_sunspots = apply_zero_phase_smoothing(historical_sunspots, cutoff_months=18)
 
-    # 3. Extract and separate the Directional Zero-Crossings
-    braking_dates, accelerating_dates = extract_directional_crossings(historical_sunspots)
-    
-    # Create the unified crossing list once to avoid variable overwriting
-    crossing_dates = sorted(list(braking_dates) + list(accelerating_dates))
 
-    # ==========================================
-    # --- PHASE 3: STATISTICAL ANALYSIS ---
-    # ==========================================
-    # 1. Base Event Analysis
-    _, events_df = analyze_zero_crossings(historical_sunspots)
 
-    # Official SIDC/SILSO Solar Cycle Maximums
+# --- FAILSAFE: Restore columns if they were dropped by the smoothing step ---
+    for col, series in saved_momentum_cols.items():
+        historical_sunspots[col] = series
+
+    # 2. Extract Events and Test Hypothesis
+    crossing_dates, events_df = analyze_zero_crossings(historical_sunspots)
+
+# --- Define your solar max dates (Update these to your specific cycle peaks) ---
+    # Official SIDC/SILSO Solar Cycle Maximums (Based on 13-month smoothed sunspot number)
     solar_max_dates = [
-        pd.Timestamp('1761-06-01'), pd.Timestamp('1769-09-01'), pd.Timestamp('1778-05-01'),
-        pd.Timestamp('1788-02-01'), pd.Timestamp('1805-02-01'), pd.Timestamp('1816-05-01'),
-        pd.Timestamp('1829-11-01'), pd.Timestamp('1837-03-01'), pd.Timestamp('1848-02-01'),
-        pd.Timestamp('1860-02-01'), pd.Timestamp('1870-08-01'), pd.Timestamp('1883-12-01'),
-        pd.Timestamp('1894-01-01'), pd.Timestamp('1906-02-01'), pd.Timestamp('1917-08-01'),
-        pd.Timestamp('1928-04-01'), pd.Timestamp('1937-04-01'), pd.Timestamp('1947-05-01'),
-        pd.Timestamp('1957-03-01'), pd.Timestamp('1968-11-01'), pd.Timestamp('1979-12-01'),
-        pd.Timestamp('1989-11-01'), pd.Timestamp('2001-11-01'), pd.Timestamp('2014-04-01'),
-        pd.Timestamp('2024-10-01')  # Cycle 25 (Latest consensus peak)
+        pd.Timestamp('1761-06-01'),  # Cycle 1
+        pd.Timestamp('1769-09-01'),  # Cycle 2
+        pd.Timestamp('1778-05-01'),  # Cycle 3
+        pd.Timestamp('1788-02-01'),  # Cycle 4
+        pd.Timestamp('1805-02-01'),  # Cycle 5
+        pd.Timestamp('1816-05-01'),  # Cycle 6
+        pd.Timestamp('1829-11-01'),  # Cycle 7
+        pd.Timestamp('1837-03-01'),  # Cycle 8
+        pd.Timestamp('1848-02-01'),  # Cycle 9
+        pd.Timestamp('1860-02-01'),  # Cycle 10
+        pd.Timestamp('1870-08-01'),  # Cycle 11
+        pd.Timestamp('1883-12-01'),  # Cycle 12
+        pd.Timestamp('1894-01-01'),  # Cycle 13
+        pd.Timestamp('1906-02-01'),  # Cycle 14
+        pd.Timestamp('1917-08-01'),  # Cycle 15
+        pd.Timestamp('1928-04-01'),  # Cycle 16
+        pd.Timestamp('1937-04-01'),  # Cycle 17
+        pd.Timestamp('1947-05-01'),  # Cycle 18
+        pd.Timestamp('1957-03-01'),  # Cycle 19
+        pd.Timestamp('1968-11-01'),  # Cycle 20
+        pd.Timestamp('1979-12-01'),  # Cycle 21
+        pd.Timestamp('1989-11-01'),  # Cycle 22
+        pd.Timestamp('2001-11-01'),  # Cycle 23
+        pd.Timestamp('2014-04-01'),  # Cycle 24
+        pd.Timestamp('2024-10-01')   # Cycle 25 (Latest consensus peak)
     ]
 
+    # --- Usage before calling the stratified test ---
     events_df = add_months_from_max(events_df, solar_max_dates)
+    # calculate_stratified_significance(events_df)
 
-    if RUN_STATISTICAL_TESTS:
-        # Generate the primary table, Medians, and the base Permutation test
-        historic_cycles_df = test_historic_kinematic_reversals(historical_sunspots, crossing_dates)
-        
-        if RUN_SENSITIVITY_LOO and historic_cycles_df is not None and not historic_cycles_df.empty:
-            # Run the sensitivity test and append the results to the markdown file
-            run_leave_one_out_analysis(historic_cycles_df)
+    # 3. Plot the data with event markers
+    plot_multivariate_solar_data(historical_sunspots, crossing_dates)
 
-    # ==========================================
-    # --- PHASE 4: VISUALIZATION & OUTPUT ---
-    # ==========================================
-    if GENERATE_GRID_PLOTS:
-        plot_multivariate_solar_data(historical_sunspots, crossing_dates)
-        export_cycle_grid_plots(historical_sunspots, crossing_dates)
+# 3. Generate the Grid Plot
+    # plot_cycle_subplots(historical_sunspots, crossing_dates)
 
-    if GENERATE_BARYCENTER_PLOT and magnetic_data is not None:
-        plot_sun_barycenter_magnetic_trajectory(magnetic_data)
-        
-    if GENERATE_UNIFIED_STACK and magnetic_data is not None:
-        plot_unified_magnetic_kinematics(magnetic_data, historical_sunspots, braking_dates, accelerating_dates)
-        plot_continuous_cross_correlation(magnetic_data, historical_sunspots)
 
-    if GENERATE_STACKED_AMPLITUDE_PLOT and RUN_STATISTICAL_TESTS:
-        if historic_cycles_df is not None and not historic_cycles_df.empty:
-            plot_reversal_amplitudes_stacked(historic_cycles_df)
+# 2. Extract the Directional Zero-Crossings
+    braking_dates, accelerating_dates = extract_directional_crossings(historical_sunspots)
 
-    if GENERATE_RAW_COMPARISONS and magnetic_data is not None:
-        plot_raw_acceleration_vs_magnetic_poles(magnetic_data, historical_sunspots, crossing_dates)
+    export_cycle_grid_plots(historical_sunspots, crossing_dates)
 
-    if GENERATE_SPECTRAL_COHERENCE and magnetic_data is not None:
-        plot_spectral_coherence(magnetic_data, historical_sunspots)
 
-    # Save findings for further analysis
+# 2. Fetch the Raw Magnetic Data
+    magnetic_data = load_wso_magnetic_data()
+
+    plot_sun_barycenter_magnetic_trajectory()
+    
+
+# 5. Plot the Unified Master Stack
+    plot_unified_magnetic_kinematics(magnetic_data, historical_sunspots, braking_dates, accelerating_dates)
+
+# Run the continuous wave correlation
+    plot_continuous_cross_correlation(magnetic_data, historical_sunspots)
+
+
+    crossing_dates = sorted(list(braking_dates) + list(accelerating_dates))
+
+# 1. Generate the table, the Medians, and the base Permutation test
+    historic_cycles_df = test_historic_kinematic_reversals(historical_sunspots, crossing_dates)
+
+# 2. Run the sensitivity test and append the results to the bottom of the file
+    run_leave_one_out_analysis(historic_cycles_df)
+
+# 3. Plot the Boxplot!
+    if historic_cycles_df is not None and not historic_cycles_df.empty:
+        plot_reversal_amplitudes_stacked(historic_cycles_df)
+
+    # Generate the raw data comparison plot
+    plot_raw_acceleration_vs_magnetic_poles(magnetic_data, historical_sunspots, crossing_dates)
+
+    # plot_high_frequency_residuals(magnetic_data, historical_sunspots)
+
+    plot_spectral_coherence(magnetic_data, historical_sunspots)
+
+# Save your findings for further analysis
     events_df.to_csv("solar_cycle_events_analysis.csv", index=False)
-    logging.info("Pipeline Complete. Base analysis saved to 'solar_cycle_events_analysis.csv'.")
+    print("\nAnalysis saved to 'solar_cycle_events_analysis.csv'.")
+
