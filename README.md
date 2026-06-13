@@ -51,7 +51,7 @@ Planetary gravity is too weak to influence the Sun. Consequently, kinematic zero
 
 ## Data Sources & Integrity
 * **Sunspot Data:** Historical SIDC/SILSO datasets (Cycles 1 through 24): Sunspot data from the World Data Center SILSO, Royal Observatory of Belgium, Brussels, https://doi.org/10.24414/qnza-ac80
-* **Kinematic Data:** Computed based on planetary barycentric movement via JPL DE421 ephemerides (`skyfield`).
+* **Kinematic Data:** Computed based on planetary barycentric movement via JPL DE440 ephemerides (`skyfield`).
 * **Magnetic Data:** Polar Field Data sourced from the Wilcox Solar Observatory (WSO): http://wso.stanford.edu/Polar.html (covers 1976-2025)
 * **Temporal Scope:** Analysis covers 1755–2025. Data after 2025 is deliberately excluded to ensure statistical integrity against provisional/uncalibrated telemetry during the current polar reversal.
 
